@@ -112,7 +112,9 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
     if (cudaMemcpy(out_ids, h->nd, sizeof(unsigned)*nq*topk, cudaMemcpyDefault) != cudaSuccess) { rc=16; goto done; }
-    if (out_dist) cudaMemcpy(out_dist, h->dd, sizeof(float)*nq*topk, cudaMemcpyDefault);
+    if (out_dist && cudaMemcpy(out_dist, h->dd,
+                               sizeof(float) * (size_t)nq * (size_t)topk,
+                               cudaMemcpyDefault) != cudaSuccess) { rc=17; goto done; }
   }
 done:
   if (sp) cuvsCagraSearchParamsDestroy(sp);
@@ -151,6 +153,8 @@ void* seekdb_cuvs_deserialize(const char* filename, long n, long dim)
   if (!filename || n <= 0 || dim <= 0) return NULL;
   sk_cuvs_index* index = (sk_cuvs_index*)calloc(1, sizeof(*index));
   if (!index) return NULL;
+  if (pthread_mutex_init(&index->mu, NULL) != 0) { free(index); return NULL; }
+  index->mu_ready = 1;
   if (cuvsResourcesCreate(&index->res) != CUVS_SUCCESS) goto fail;
   if (cuvsCagraIndexParamsCreate(&index->ip) != CUVS_SUCCESS) goto fail_res;
   if (cuvsCagraIndexCreate(&index->idx) != CUVS_SUCCESS) goto fail_ip;
@@ -176,6 +180,7 @@ fail_ip:
 fail_res:
   cuvsResourcesDestroy(index->res);
 fail:
+  if (index->mu_ready) pthread_mutex_destroy(&index->mu);
   fprintf(stderr, "[seekdb_cuvs] deserialize failed: %s\n", cuvsGetLastErrorText());
   free(index);
   return NULL;
