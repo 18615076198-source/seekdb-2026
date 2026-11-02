@@ -10,19 +10,33 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
+#include <pthread.h>
 
 typedef struct {
   cuvsResources_t        res;
   cuvsCagraIndexParams_t ip;
   cuvsCagraIndex_t       idx;
   long n, dim;
+  /* Reuse device scratch across queries; search is serialized per handle. */
+  float *qd;
+  unsigned *nd;
+  float *dd;
+  size_t q_capacity;
+  size_t out_capacity;
+  pthread_mutex_t mu;
+  int mu_ready;
 } sk_cuvs_index;
 
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
+  if (!base || n <= 0 || dim <= 0) return NULL;
   sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
   if (!h) return NULL;
-  if (cuvsResourcesCreate(&h->res) != CUVS_SUCCESS) { free(h); return NULL; }
+  if (pthread_mutex_init(&h->mu, NULL) != 0) { free(h); return NULL; }
+  h->mu_ready = 1;
+  if (cuvsResourcesCreate(&h->res) != CUVS_SUCCESS) { pthread_mutex_destroy(&h->mu); free(h); return NULL; }
 
   DLManagedTensor dset; long ds[2] = {n, dim};
   dset.dl_tensor.data = (void*)base;
@@ -44,7 +58,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
 
 fail_idx: cuvsCagraIndexDestroy(h->idx);
 fail_ip:  cuvsCagraIndexParamsDestroy(h->ip);
-fail_res: cuvsResourcesDestroy(h->res); free(h);
+fail_res: cuvsResourcesDestroy(h->res); if (h->mu_ready) pthread_mutex_destroy(&h->mu); free(h);
   fprintf(stderr, "[seekdb_cuvs] build failed: %s\n", cuvsGetLastErrorText());
   return NULL;
 }
@@ -54,19 +68,40 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 {
   sk_cuvs_index* h = (sk_cuvs_index*)handle;
   if (!h) return 1;
+  if (!query || nq <= 0 || topk <= 0 || topk > h->n || h->dim <= 0) return 2;
+  if ((uint64_t)nq > SIZE_MAX / (uint64_t)h->dim ||
+      (uint64_t)nq * (uint64_t)h->dim > SIZE_MAX / sizeof(float) ||
+      (uint64_t)nq > SIZE_MAX / (uint64_t)topk ||
+      (uint64_t)nq * (uint64_t)topk > SIZE_MAX / sizeof(unsigned)) return 3;
   int rc = 0;
-  float* qd = 0; unsigned* nd = 0; float* dd = 0; cuvsCagraSearchParams_t sp = 0;
-  if (cuvsRMMAlloc(h->res, (void**)&qd, sizeof(float)*nq*h->dim)  != CUVS_SUCCESS) { rc=10; goto done; }
-  if (cuvsRMMAlloc(h->res, (void**)&nd, sizeof(unsigned)*nq*topk) != CUVS_SUCCESS) { rc=11; goto done; }
-  if (cuvsRMMAlloc(h->res, (void**)&dd, sizeof(float)*nq*topk)    != CUVS_SUCCESS) { rc=12; goto done; }
-  if (cudaMemcpy(qd, query, sizeof(float)*nq*h->dim, cudaMemcpyDefault) != cudaSuccess) { rc=13; goto done; }
+  cuvsCagraSearchParams_t sp = 0;
+  const size_t qbytes = sizeof(float) * (size_t)nq * (size_t)h->dim;
+  const size_t obytes = sizeof(unsigned) * (size_t)nq * (size_t)topk;
+  if (pthread_mutex_lock(&h->mu) != 0) return 4;
+  if (h->q_capacity < qbytes) {
+    float *next = 0;
+    if (cuvsRMMAlloc(h->res, (void**)&next, qbytes) != CUVS_SUCCESS) { rc=10; goto done; }
+    if (h->qd) cuvsRMMFree(h->res, h->qd, h->q_capacity);
+    h->qd = next; h->q_capacity = qbytes;
+  }
+  if (h->out_capacity < obytes) {
+    unsigned *next_ids = 0; float *next_dist = 0;
+    if (cuvsRMMAlloc(h->res, (void**)&next_ids, obytes) != CUVS_SUCCESS) { rc=11; goto done; }
+    if (cuvsRMMAlloc(h->res, (void**)&next_dist, sizeof(float) * (size_t)nq * (size_t)topk) != CUVS_SUCCESS) {
+      cuvsRMMFree(h->res, next_ids, obytes); rc=12; goto done;
+    }
+    if (h->nd) cuvsRMMFree(h->res, h->nd, h->out_capacity);
+    if (h->dd) cuvsRMMFree(h->res, h->dd, h->out_capacity);
+    h->nd = next_ids; h->dd = next_dist; h->out_capacity = obytes;
+  }
+  if (cudaMemcpy(h->qd, query, qbytes, cudaMemcpyDefault) != cudaSuccess) { rc=13; goto done; }
   {
     DLManagedTensor qt, nt, dt; long qs[2]={nq,h->dim}, nsh[2]={nq,topk}, dsh[2]={nq,topk};
-    qt.dl_tensor.data=qd; qt.dl_tensor.device.device_type=kDLCUDA; qt.dl_tensor.device.device_id=0;
+    qt.dl_tensor.data=h->qd; qt.dl_tensor.device.device_type=kDLCUDA; qt.dl_tensor.device.device_id=0;
     qt.dl_tensor.ndim=2; qt.dl_tensor.dtype.code=kDLFloat; qt.dl_tensor.dtype.bits=32; qt.dl_tensor.dtype.lanes=1;
     qt.dl_tensor.shape=qs; qt.dl_tensor.strides=0; qt.dl_tensor.byte_offset=0;
-    nt=qt; nt.dl_tensor.data=nd; nt.dl_tensor.dtype.code=kDLUInt; nt.dl_tensor.shape=nsh;
-    dt=qt; dt.dl_tensor.data=dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
+    nt=qt; nt.dl_tensor.data=h->nd; nt.dl_tensor.dtype.code=kDLUInt; nt.dl_tensor.shape=nsh;
+    dt=qt; dt.dl_tensor.data=h->dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
       size_t required_itopk = (size_t)topk * 4;
@@ -76,15 +111,13 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
-    if (cudaMemcpy(out_ids, nd, sizeof(unsigned)*nq*topk, cudaMemcpyDefault) != cudaSuccess) { rc=16; goto done; }
-    if (out_dist) cudaMemcpy(out_dist, dd, sizeof(float)*nq*topk, cudaMemcpyDefault);
+    if (cudaMemcpy(out_ids, h->nd, sizeof(unsigned)*nq*topk, cudaMemcpyDefault) != cudaSuccess) { rc=16; goto done; }
+    if (out_dist) cudaMemcpy(out_dist, h->dd, sizeof(float)*nq*topk, cudaMemcpyDefault);
   }
 done:
   if (sp) cuvsCagraSearchParamsDestroy(sp);
-  if (dd) cuvsRMMFree(h->res, dd, sizeof(float)*nq*topk);
-  if (nd) cuvsRMMFree(h->res, nd, sizeof(unsigned)*nq*topk);
-  if (qd) cuvsRMMFree(h->res, qd, sizeof(float)*nq*h->dim);
   if (rc) fprintf(stderr, "[seekdb_cuvs] search rc=%d: %s\n", rc, cuvsGetLastErrorText());
+  pthread_mutex_unlock(&h->mu);
   return rc;
 }
 
@@ -94,7 +127,11 @@ void seekdb_cuvs_free(void* handle)
   if (!h) return;
   cuvsCagraIndexDestroy(h->idx);
   cuvsCagraIndexParamsDestroy(h->ip);
+  if (h->qd) cuvsRMMFree(h->res, h->qd, h->q_capacity);
+  if (h->nd) cuvsRMMFree(h->res, h->nd, h->out_capacity);
+  if (h->dd) cuvsRMMFree(h->res, h->dd, h->out_capacity);
   cuvsResourcesDestroy(h->res);
+  if (h->mu_ready) pthread_mutex_destroy(&h->mu);
   free(h);
 }
 
