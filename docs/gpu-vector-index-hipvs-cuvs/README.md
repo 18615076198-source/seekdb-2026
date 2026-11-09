@@ -68,6 +68,14 @@ For a CPU-only build, leave the defaults or pass:
   --make -j64
 ```
 
+## AMD contest tuning
+
+The contest branch keeps the V5 CAGRA graph degree at 128 and tunes the NN-Descent refinement budget by input dimension. The 128-dimensional SIFT workload uses an intermediate graph degree of 192 and 64 refinement iterations; the 256-dimensional Hidden workload keeps 256 and 100 to protect recall on the harder workload.
+
+The bridge also reuses the CAGRA search-parameter object and device scratch buffers for the lifetime of an index handle. Queries are serialized per handle, so the cached resources remain safe while repeated single-row queries avoid repeated parameter creation and device allocation.
+
+The official evaluator remains the source of performance numbers. Run the smoke and persistence validation scripts first, then compare the candidate against the same-round V5 baseline on the AMD evaluation machine.
+
 ## SQL usage
 
 Per-index GPU opt-in:
