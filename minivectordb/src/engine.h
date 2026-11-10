@@ -532,29 +532,51 @@ class Engine {
       }
     }
 
-    struct Cand { Value key; int64_t pk; };
+    // Sort key kept out of Value: Value carries a string and a vector, so
+    // building one per candidate dominated the scan. This is a flat 40 bytes.
+    struct Cand {
+      int64_t pk = 0;
+      Ty ty = Ty::Int;
+      int64_t i = 0;
+      double d = 0;
+      const std::string *s = nullptr;
+    };
     std::vector<Cand> cands;
-    cands.reserve(t.order.size());
+    cands.reserve(t.rows.size());
     auto consider = [&](int64_t pk, const std::vector<Value> &row) {
       for (const auto &w : where)
         if (!testCond(row[w.col], w.op, w.val)) return;
       Cand c;
       c.pk = pk;
       if (hasOrder) {
-        if (orderOut >= 0) c.key = projs[orderOut].isL2
-            ? Value::ofDouble(l2Distance(row[projs[orderOut].col].vec, projs[orderOut].vec))
-            : row[projs[orderOut].col];
-        else if (orderIsL2) c.key = Value::ofDouble(l2Distance(row[orderCol].vec, orderVec));
-        else c.key = row[orderCol];
+        if (orderOut >= 0 && projs[orderOut].isL2) {
+          c.ty = Ty::Double;
+          c.d = l2Distance(row[projs[orderOut].col].vec, projs[orderOut].vec);
+        } else if (orderIsL2) {
+          c.ty = Ty::Double;
+          c.d = l2Distance(row[orderCol].vec, orderVec);
+        } else {
+          const Value &v = row[orderOut >= 0 ? projs[orderOut].col : orderCol];
+          c.ty = v.ty;
+          if (v.ty == Ty::Int) c.i = v.i;
+          else if (v.ty == Ty::Double) c.d = v.d;
+          else c.s = &v.s;
+        }
       }
-      cands.push_back(std::move(c));
+      cands.push_back(c);
     };
 
     if (!t.spilled) {
-      for (int64_t pk : t.order) {
-        auto it = t.rows.find(pk);
-        if (it == t.rows.end()) continue;
-        consider(pk, it->second);
+      if (hasOrder) {
+        // ORDER BY + LIMIT only needs the candidate set, not insertion order:
+        // iterate the map directly and skip one hash lookup per row.
+        for (const auto &kv : t.rows) consider(kv.first, kv.second);
+      } else {
+        for (int64_t pk : t.order) {
+          auto it = t.rows.find(pk);
+          if (it == t.rows.end()) continue;
+          consider(pk, it->second);
+        }
       }
     } else {
       std::vector<Value> buf;
@@ -564,7 +586,10 @@ class Engine {
 
     if (hasOrder) {
       auto cmp = [&](const Cand &a, const Cand &b) {
-        int c = compareValue(a.key, b.key);
+        int c = 0;
+        if (a.ty == Ty::Int && b.ty == Ty::Int) c = a.i < b.i ? -1 : a.i > b.i ? 1 : 0;
+        else if (a.ty == Ty::Double && b.ty == Ty::Double) c = a.d < b.d ? -1 : a.d > b.d ? 1 : 0;
+        else if (a.ty == Ty::Str && b.ty == Ty::Str) c = *a.s < *b.s ? -1 : *a.s > *b.s ? 1 : 0;
         if (st.desc) c = -c;
         if (c == 0 && a.pk != b.pk) c = (a.pk < b.pk) ? -1 : 1;
         return c < 0;
