@@ -118,6 +118,18 @@
       "id": "s8",
       "speaker": "student",
       "content": "继续"
+    },
+    {
+      "id": "s9",
+      "speaker": "student",
+      "content": "我们的记录格式是 [len][payload]。从头顺序读取scanSegment 先读 4 字节长度，读不满就停止；再读 len 字节，读不满也停止，如果len 大得离谱按垃圾数据停止。扫描结束后，文件只留最后一条完整记录的末尾，因此偏移表不会指向撕裂区。另外这样不会丢已提交行，因为段追加只发生在该行 WAL 的 COMMIT 记录 fdatasync 之后：如果发生撕裂，说明进程是在 WAL 落盘后、段写完前被杀，这时 WAL 里有完整提交记录，重启回放会把这行放回内存，下次落段再写一遍。其中段文件只是已提交状态的缓存， checkpoint 截断 WAL 之前，WAL 才是权威副本。",
+      "note": "final wording by the student, edited from the agent's draft"
+    },
+    {
+      "id": "s10",
+      "speaker": "student",
+      "content": "顺序是：compact 写 tmp ， fdatasync ， rename ， fsync 目录 →，写快照 ， 截断 WAL。\n\nkill 在 rename 之前情况：旧段完好，tmp 是垃圾文件，WAL 没被截断，重启后用旧段并回放 WAL。\nkill 在 rename 之后、截断之前情况：新段已经完整持久（fsync 在 rename 之前完成），但是快照可能还是旧的， WAL 是超集。如果回放 WAL 是整行 after-image，是幂等的，重复应用结果不变。\n如果反过来先截断 WAL 再做 compact 是不行：WAL 是 checkpoint 之前唯一的权威副本，如果 compact 中途崩溃，已提交的行既不在段里也不在 WAL 里，会直接丢数据。所以必须“新状态完整可见之后，才能丢弃旧日志”。另外用 rename 避免半新半旧的段文件被当成有效状态。",
+      "note": "final wording by the student, edited from the agent's draft"
     }
   ],
   "experiments": [
@@ -176,6 +188,13 @@
       "command": "DOCKER_BUILDKIT=0 docker build --network=host -t mvdb . ; printf 'CREATE TABLE ...' | docker run --rm -i mvdb",
       "output": "Successfully tagged mvdb:latest; container output: {} / {\"affected_rows\":1} / {\"columns\":[\"id\",\"d\"],\"rows\":[[1,5.0]]}; second container with -v /tmp/mvdbdata:/data read back [[7,\"x\"]]",
       "note": "docker.io 29.1.3 inside WSL; daemon started with --iptables=false --bridge=none and registry mirrors because Docker Hub is unreachable from this network"
+    },
+    {
+      "id": "e9",
+      "what": "fault injection at the checkpoint boundary and at a torn cold-segment tail",
+      "command": "MVDB_CRASH_BEFORE_SNAPSHOT_RENAME=1 / MVDB_CRASH_BEFORE_WAL_TRUNC=1 / kill -9 then truncate t.seg by 5 bytes",
+      "output": "FAILS: 0; crash before snapshot rename: rows [[1],[2]] survive; crash before WAL truncate: no duplication; torn segment tail: [[1],[2]] recovered",
+      "note": "hooks call _exit(9) at the two windows described in Q2; the torn-tail case cuts the last record so the row only exists in the WAL"
     }
   ],
   "student_evidence": [
@@ -241,20 +260,42 @@
       "student_quote": "官方驱动先不管吧，按照通用的做 大不了再改",
       "result_pointer": "/design_notes/protocol_adapter",
       "result_quote": "only that layer changes"
+    },
+    {
+      "id": "ev8",
+      "dimension": "technical_understanding",
+      "claim": "a torn segment append is detected by short reads and the committed row is recovered from the WAL",
+      "student_pointer": "/conversations/15/content",
+      "student_quote": "如果发生撕裂，说明进程是在 WAL 落盘后、段写完前被杀",
+      "result_pointer": "/experiments/8/output",
+      "result_quote": "torn segment tail: [[1],[2]] recovered",
+      "comment": "student restatement (edited from an agent draft) then confirmed by a fault-injection test that truncates the last segment record"
+    },
+    {
+      "id": "ev9",
+      "dimension": "technical_understanding",
+      "claim": "checkpoint order (durable new state before discarding the WAL) is what makes both crash windows safe",
+      "student_pointer": "/conversations/16/content",
+      "student_quote": "如果反过来先截断 WAL 再做 compact 是不行",
+      "result_pointer": "/experiments/8/output",
+      "result_quote": "crash before WAL truncate: no duplication",
+      "comment": "student restatement (edited from an agent draft) then confirmed by crashing between snapshot rename and WAL truncation"
     }
   ],
   "pending_questions": [
     {
       "id": "q1",
       "question": "A segment append is torn by kill -9. How does scanSegment decide the record is incomplete, and why cannot a committed row be lost by truncating it?",
-      "status": "answered_by_agent_awaiting_student_restatement",
-      "note": "The agent drafted an explanation (see /agent_explanations). It is not counted as student evidence until the student restates it in their own words."
+      "status": "answered",
+      "note": "The agent drafted an explanation (see /agent_explanations). It is not counted as student evidence until the student restates it in their own words.",
+      "resolved_by": "/conversations/15/content"
     },
     {
       "id": "q2",
       "question": "Checkpoint does compact -> rename -> truncate WAL. What happens if kill lands before/after the rename, and why can the order not be reversed?",
-      "status": "answered_by_agent_awaiting_student_restatement",
-      "note": "The agent drafted an explanation (see /agent_explanations). It is not counted as student evidence until the student restates it in their own words."
+      "status": "answered",
+      "note": "The agent drafted an explanation (see /agent_explanations). It is not counted as student evidence until the student restates it in their own words.",
+      "resolved_by": "/conversations/16/content"
     }
   ],
   "retrospective": {

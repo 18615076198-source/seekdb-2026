@@ -167,9 +167,11 @@ class Storage {
     ::fdatasync(fd);
     ::close(fd);
     std::string cur = dir_ + "/snapshot.bin";
+    if (std::getenv("MVDB_CRASH_BEFORE_SNAPSHOT_RENAME")) ::_exit(9);
     if (::rename(tmp.c_str(), cur.c_str()) != 0) return;
     int dfd = ::open(dir_.c_str(), O_RDONLY | O_DIRECTORY);
     if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
+    if (std::getenv("MVDB_CRASH_BEFORE_WAL_TRUNC")) ::_exit(9);
     if (walFd_ >= 0) { ::ftruncate(walFd_, 0); ::fdatasync(walFd_); }
   }
 
