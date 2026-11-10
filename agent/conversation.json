@@ -1,0 +1,46 @@
+{
+  "schema": "agent-learning-evidence-v3-unbounded",
+  "submission": {
+    "project": "MiniVectorDB",
+    "branch": "2026-competition-round2",
+    "note": "draft; final material is assembled from the working session and must stay <=128 KiB"
+  },
+  "material_scope": "Draft placeholder. The final file will contain the real user prompts, agent responses, commands, outputs and student explanations collected during the tournament, with explicit markers for anything not executed.",
+  "user_prompts": [
+    {
+      "id": "u1",
+      "content": "任务是从零实现 MiniVectorDB（OceanBase 大赛 2026 round2）。先功能准入，再性能，最后把这次对话整理成 agent/conversation.json。"
+    },
+    {
+      "id": "u2",
+      "content": "在 WSL里面吧，linux作为备选项，如果预估太大了c盘的wsl装不下可以再变通。用C++。"
+    },
+    {
+      "id": "u3",
+      "content": "计划完全可以 按你计划执行，灵活变通即可。"
+    },
+    {
+      "id": "u4",
+      "content": "官方驱动先不管吧，按照通用的做 大不了再改"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "e1",
+      "what": "public cases",
+      "output": "SUMMARY PASS=20 FAIL=0 MISSING=0"
+    },
+    {
+      "id": "e2",
+      "what": "crash matrix",
+      "output": "4/4 PASS"
+    },
+    {
+      "id": "e3",
+      "what": "spill test 100k x 128, budget 16MB",
+      "output": "wall=6.24s, VmHWM=17.7MB"
+    }
+  ],
+  "retrospective": "Draft placeholder: student reflections will be added verbatim.",
+  "limitations": "Official driver/protocol not published; ann mode is a no-op; pk index is still resident."
+}
