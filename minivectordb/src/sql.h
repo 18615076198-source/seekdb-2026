@@ -134,7 +134,22 @@ class Parser {
   }
   int64_t number() {
     if (peek().k != Token::Num) throw DbError("syntax_error", "expected number");
-    std::string s = next().text;
+    return toInt(next().text);
+  }
+  // Parse the sign together with the digits so -9223372036854775808 (LLONG_MIN)
+  // is accepted: negating a parsed +9223372036854775808 would already overflow.
+  int64_t literalInt() {
+    bool neg = false;
+    if (peekSym("-")) {
+      neg = true;
+      next();
+    }
+    if (peek().k != Token::Num) throw DbError("syntax_error", "expected number");
+    std::string s = neg ? ("-" + peek().text) : peek().text;
+    next();
+    return toInt(s);
+  }
+  static int64_t toInt(const std::string &s) {
     errno = 0;
     char *end = nullptr;
     long long v = strtoll(s.c_str(), &end, 10);
@@ -170,7 +185,7 @@ class Parser {
   Expr parseLiteral() {
     Expr e;
     if (peek().k == Token::Num) { e.kind = Expr::IntLit; e.i = number(); return e; }
-    if (peekSym("-")) { next(); e.kind = Expr::IntLit; e.i = -number(); return e; }
+    if (peekSym("-")) { e.kind = Expr::IntLit; e.i = literalInt(); return e; }
     if (peek().k == Token::Str) { e.kind = Expr::StrLit; e.s = next().text; return e; }
     throw DbError("syntax_error", "literal expected");
   }
@@ -211,7 +226,7 @@ class Parser {
     }
     if (peek().k == Token::Id) { Expr e; e.kind = Expr::Col; e.name = next().text; return e; }
     if (peek().k == Token::Num) { Expr e; e.kind = Expr::IntLit; e.i = number(); return e; }
-    if (peekSym("-")) { next(); Expr e; e.kind = Expr::IntLit; e.i = -number(); return e; }
+    if (peekSym("-")) { Expr e; e.kind = Expr::IntLit; e.i = literalInt(); return e; }
     if (peek().k == Token::Str) { Expr e; e.kind = Expr::StrLit; e.s = next().text; return e; }
     throw DbError("syntax_error", "unexpected token");
   }

@@ -95,10 +95,27 @@ def case_recovery_reentrant():
     return ok, got
 
 
+def case_sigterm_rolls_back():
+    d = fresh("sigterm")
+    p = start(d)
+    send(p, "CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(8));")
+    send(p, "INSERT INTO t VALUES (1,'a');")
+    send(p, "BEGIN;")
+    send(p, "INSERT INTO t VALUES (2,'b');")
+    p.send_signal(signal.SIGTERM)
+    rc = p.wait(timeout=30)
+    p = start(d)
+    got = send(p, "SELECT id FROM t ORDER BY id;")
+    p.stdin.close(); p.wait(30)
+    ok = rc == 0 and got.get("rows") == [[1]]
+    return ok, got
+
+
 def main():
     results = []
     for fn in (case_autocommit_survives, case_uncommitted_absent,
-               case_partial_txn_not_visible, case_recovery_reentrant):
+               case_partial_txn_not_visible, case_recovery_reentrant,
+               case_sigterm_rolls_back):
         ok, got = fn()
         results.append((fn.__name__, ok, got))
         print(("PASS " if ok else "FAIL ") + fn.__name__ + " " + json.dumps(got, ensure_ascii=False)[:200])
