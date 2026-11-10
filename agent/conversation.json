@@ -1,46 +1,260 @@
 {
   "schema": "agent-learning-evidence-v3-unbounded",
-  "submission": {
-    "project": "MiniVectorDB",
-    "branch": "2026-competition-round2",
-    "note": "draft; final material is assembled from the working session and must stay <=128 KiB"
-  },
-  "material_scope": "Draft placeholder. The final file will contain the real user prompts, agent responses, commands, outputs and student explanations collected during the tournament, with explicit markers for anything not executed.",
+  "project": "MiniVectorDB (OceanBase 2026 competition, round2)",
+  "language": "zh-CN",
+  "synthetic": false,
+  "material_scope": "Draft assembled from the real working session on 2026-11-09/10. Student messages are verbatim. Agent turns are compressed summaries of what was actually said; commands and outputs are copied from real runs. Anything not executed is marked as planned or unanswered.",
+  "problem_statement_summary": "Implement a single-node vector database: SQL subset (CREATE/INSERT/SELECT/UPDATE/DELETE, comparisons, AND, ORDER BY, LIMIT, L2_DISTANCE, filtered TopK), /data persistence, BEGIN/COMMIT/ROLLBACK, crash recovery; MySQL cases must all pass before performance and agent-prompt scoring.",
   "user_prompts": [
     {
-      "id": "u1",
-      "content": "任务是从零实现 MiniVectorDB（OceanBase 大赛 2026 round2）。先功能准入，再性能，最后把这次对话整理成 agent/conversation.json。"
+      "id": "p1",
+      "content": "先功能准入，再性能，最后把这次对话整理成 agent/conversation.json。"
     },
     {
-      "id": "u2",
+      "id": "p2",
       "content": "在 WSL里面吧，linux作为备选项，如果预估太大了c盘的wsl装不下可以再变通。用C++。"
     },
     {
-      "id": "u3",
+      "id": "p3",
       "content": "计划完全可以 按你计划执行，灵活变通即可。"
     },
     {
-      "id": "u4",
+      "id": "p4",
+      "content": "这个你给我具体方案我实现一下"
+    },
+    {
+      "id": "p5",
       "content": "官方驱动先不管吧，按照通用的做 大不了再改"
+    },
+    {
+      "id": "p6",
+      "content": "继续即可"
+    },
+    {
+      "id": "p7",
+      "content": "继续下一步"
+    },
+    {
+      "id": "p8",
+      "content": "继续"
+    }
+  ],
+  "design_notes": {
+    "protocol_adapter": "The engine is separated from the wire format by a ProtocolAdapter seam. JSON-per-line is the local-test default; a TSV adapter is a placeholder. When the official driver is published only that layer changes.",
+    "no_steal_invariant": "Data pages are written only at checkpoint; during execution all uncommitted state is in memory. A segment append happens only after the WAL fdatasync, so the segment never contains uncommitted rows."
+  },
+  "conversations": [
+    {
+      "id": "a1",
+      "speaker": "agent",
+      "content": "Proposed a 10-line plan (C++20 single-thread, WAL+snapshot, undo transactions, exact L2 TopK, IVF later) and flagged three risks: unknown driver protocol, crash-recovery edges, and the memory-limit case. Asked the student to explain three semantics before any code."
+    },
+    {
+      "id": "s1",
+      "speaker": "student",
+      "content": "① 过滤后 TopK：执行顺序必须是 WHERE，候选集S，只在 S 上算 L2 ，排序 ， LIMIT。 所以 S 有 3 行并且LIMIT 10 时返回 3 行。S 为空返回空。 \"先取全局 Top10 再过滤\"错在它先选出了 10 条 skip，过滤后只剩 0 条，就是谓词没有下推到候选集。 并列 1.0 时按主键升序。 正确性判据：结果必须等于\"对 S 里每一行都算距离再排序\"的暴力结果。"
+    },
+    {
+      "id": "s2",
+      "speaker": "student",
+      "content": "② 事务内可见性：读路径=已提交基线叠加事务私有写集（read-your-writes）。 语句失败只撤销这条语句的写（语句级 savepoint），但是事务还是继续。所以UPDATE 还在。 ROLLBACK 撤销整个事务的私有写。 没有 BEGIN 时每条语句自成事务，语句成功即提交，对下一条语句可见。"
+    },
+    {
+      "id": "s3",
+      "speaker": "student",
+      "content": "③ 崩溃恢复边界：承诺的边界是 COMMIT 返回成功的那一刻，返回成功 必须已经 fsync 到日志。 fsync 之前被 kill -9，重启后该事务可以不存在，返回成功之后必须存在。 WAL 尾部半条记录：按长度/校验和识别，截断丢弃。 恢复途中再被 kill：恢复必须可重入/幂等。 未提交的修改可能已经落到数据页，但恢复时不能让它部分可见。"
+    },
+    {
+      "id": "a2",
+      "speaker": "agent",
+      "content": "Implemented the engine, WAL (length+CRC32+COMMIT), snapshot checkpoint, undo-based transactions. Public package went 12/13 then 20/20 after fixing a missing operator assignment in WHERE parsing; the bug was isolated with a parse-only debug probe."
+    },
+    {
+      "id": "a3",
+      "speaker": "agent",
+      "content": "Asked two transfer questions: (A) a half-written COMMIT record at the WAL tail, (B) a crash after the snapshot rename but before WAL truncation."
+    },
+    {
+      "id": "s4",
+      "speaker": "student",
+      "content": "A: 扫到第一条 CRC 失败的记录就停…该事务算未提交（presumed abort），进 loser 列表按 prevLSN 回滚（STEAL 下脏页可能已刷盘，不能只跳过 redo），然后把日志截到最后一条有效记录边界并持久化新终点。不能\"尽量恢复\"的原因：COMMIT 是原子决策点…恢复必须确定性，启发式会让副本分叉。"
+    },
+    {
+      "id": "s5",
+      "speaker": "student",
+      "content": "B: 这是安全侧窗口：快照已落盘，WAL 只是超集…幂等 redo 为什么能兜住：快照 LSN、checkpoint 记录、截断点是三个独立的持久化写，不可能原子…不幂等会怎样：balance += 100 重放两次变 200…B+ 树 split 重放两次直接结构损坏。"
+    },
+    {
+      "id": "a4",
+      "speaker": "agent",
+      "content": "Correct in the ARIES frame, but this implementation is NO-STEAL: data pages are only written at checkpoint, so uncommitted rows never reach the segment and no loser rollback/CLR is needed. Pointed out the ordering nuance: ARIES writes CLRs, so the torn tail is truncated first and undo comes after."
+    },
+    {
+      "id": "s6",
+      "speaker": "student",
+      "content": "继续即可"
+    },
+    {
+      "id": "a5",
+      "speaker": "agent",
+      "content": "Implemented the large-data path: append-only cold segments under /data, pk->offset index in memory, tombstones for deletes, compaction at checkpoint. Three bugs surfaced only under forced spilling: order cleared on spill, tombstones not persisted, duplicate order entries on rollback."
+    },
+    {
+      "id": "a6",
+      "speaker": "agent",
+      "content": "Pushed branch 2026-competition-round2 to the team fork and verified by sparse-cloning it and building from scratch: public package 20/20."
+    },
+    {
+      "id": "s7",
+      "speaker": "student",
+      "content": "继续下一步"
+    },
+    {
+      "id": "a7",
+      "speaker": "agent",
+      "content": "Added spec edge-case tests (NaN/Inf/overflow rejection, VARCHAR by code points, LIMIT 0, tie ordering, atomicity, transactions, restart). Found a real parser bug: -9223372036854775808 was rejected because the sign was applied after parsing the positive magnitude; fixed by parsing sign and digits together."
+    },
+    {
+      "id": "s8",
+      "speaker": "student",
+      "content": "继续"
     }
   ],
   "experiments": [
     {
       "id": "e1",
-      "what": "public cases",
-      "output": "SUMMARY PASS=20 FAIL=0 MISSING=0"
+      "what": "public package (20 cases, 95 statements)",
+      "command": "python3 tests/run_cases.py",
+      "output": "SUMMARY PASS=20 FAIL=0 MISSING=0",
+      "note": "local JSON-line adapter; --restart simulated by closing stdin and relaunching on the same data dir"
     },
     {
       "id": "e2",
-      "what": "crash matrix",
-      "output": "4/4 PASS"
+      "what": "same suite with forced spilling on every statement",
+      "command": "MVDB_MEM_BUDGET_MB=0 python3 tests/run_cases.py",
+      "output": "SUMMARY PASS=20 FAIL=0 MISSING=0",
+      "note": "exercises the cold-segment read path for every CRUD case"
     },
     {
       "id": "e3",
-      "what": "spill test 100k x 128, budget 16MB",
-      "output": "wall=6.24s, VmHWM=17.7MB"
+      "what": "kill -9 matrix",
+      "command": "python3 tests/crash_matrix.py",
+      "output": "case_autocommit_survives: PASS; case_uncommitted_absent: PASS; case_partial_txn_not_visible: PASS; case_recovery_reentrant: PASS; case_sigterm_rolls_back: PASS",
+      "note": "5/5"
+    },
+    {
+      "id": "e4",
+      "what": "cold segment under memory pressure, 100k rows x 128 dims (52MB data), 16MB budget",
+      "command": "SPILL_N=100000 SPILL_DIM=128 SPILL_BUDGET_MB=16 SPILL_DIR=/tmp/spilldata python3 tests/spill_test.py",
+      "output": "segment_files=['t.seg']; db process VmHWM 17.7MB; wall=6.24s; 5/5 checks pass",
+      "note": "ru_maxrss reported 538MB because the Python parent holds the generated dataset and fork shares it before exec; the db process itself peaked at 17.7MB"
+    },
+    {
+      "id": "e5",
+      "what": "smoke benchmark 10k x 128, 100-row batches, 1000 TopK queries (half filtered)",
+      "command": "python3 tests/bench_smoke.py",
+      "output": "wall=0.60s total, write phase 0.40s, query phase ~0.20s (0.2ms/query)",
+      "note": "before the flat-candidate-key change it was 0.73s"
+    },
+    {
+      "id": "e6",
+      "what": "build the submitted branch from a fresh clone",
+      "command": "git clone --branch 2026-competition-round2 ... && cmake -S minivectordb -B build && cmake --build build",
+      "output": "BUILD_OK; public package 20/20",
+      "note": "commit d711d6f, later 96df3ce"
+    },
+    {
+      "id": "e7",
+      "what": "LLONG_MIN literal",
+      "command": "INSERT INTO b VALUES (-9223372036854775808, 1);",
+      "output": "before: {\"error\":\"value_out_of_range\"}; after: accepted and read back exactly (-9223372036854775808)",
+      "note": "public sample only covers 9007199254740993"
     }
   ],
-  "retrospective": "Draft placeholder: student reflections will be added verbatim.",
-  "limitations": "Official driver/protocol not published; ann mode is a no-op; pk index is still resident."
+  "student_evidence": [
+    {
+      "id": "ev1",
+      "dimension": "technical_understanding",
+      "claim": "filtered TopK must be computed inside the filtered set; ties break by primary key",
+      "student_pointer": "/conversations/1/content",
+      "student_quote": "执行顺序必须是 WHERE，候选集S，只在 S 上算 L2 ，排序 ， LIMIT",
+      "result_pointer": "/experiments/0/output",
+      "result_quote": "SUMMARY PASS=20 FAIL=0 MISSING=0"
+    },
+    {
+      "id": "ev2",
+      "dimension": "technical_understanding",
+      "claim": "read-your-writes, statement-level savepoint, whole-transaction rollback",
+      "student_pointer": "/conversations/2/content",
+      "student_quote": "语句失败只撤销这条语句的写（语句级 savepoint），但是事务还是继续",
+      "result_pointer": "/experiments/0/output",
+      "result_quote": "SUMMARY PASS=20 FAIL=0 MISSING=0"
+    },
+    {
+      "id": "ev3",
+      "dimension": "technical_understanding",
+      "claim": "durability boundary is the COMMIT acknowledgement; torn tail is truncated",
+      "student_pointer": "/conversations/3/content",
+      "student_quote": "承诺的边界是 COMMIT 返回成功的那一刻",
+      "result_pointer": "/experiments/2/output",
+      "result_quote": "case_autocommit_survives: PASS"
+    },
+    {
+      "id": "ev4",
+      "dimension": "independent_verification",
+      "claim": "student applied ARIES (steal, loser rollback, CLR) to the torn-COMMIT case; agent showed the scope does not apply to this no-steal design",
+      "student_pointer": "/conversations/6/content",
+      "student_quote": "该事务算未提交（presumed abort），进 loser 列表按 prevLSN 回滚",
+      "result_pointer": "/conversations/8/content",
+      "result_quote": "this implementation is NO-STEAL: data pages are only written at checkpoint"
+    },
+    {
+      "id": "ev5",
+      "dimension": "independent_verification",
+      "claim": "student argued idempotent redo is required by at-least-once replay; the recovery re-entrancy test checks that consequence",
+      "student_pointer": "/conversations/7/content",
+      "student_quote": "幂等 redo 为什么能兜住",
+      "result_pointer": "/experiments/2/output",
+      "result_quote": "case_recovery_reentrant: PASS"
+    },
+    {
+      "id": "ev6",
+      "dimension": "problem_decomposition",
+      "claim": "student closed the environment and language constraints instead of leaving them open",
+      "student_pointer": "/user_prompts/1/content",
+      "student_quote": "在 WSL里面吧，linux作为备选项，如果预估太大了c盘的wsl装不下可以再变通。用C++。",
+      "result_pointer": "/conversations/0/content",
+      "result_quote": "Proposed a 10-line plan"
+    },
+    {
+      "id": "ev7",
+      "dimension": "tradeoffs",
+      "claim": "student accepted the protocol risk and chose a generic adapter that can be replaced later",
+      "student_pointer": "/user_prompts/4/content",
+      "student_quote": "官方驱动先不管吧，按照通用的做 大不了再改",
+      "result_pointer": "/design_notes/protocol_adapter",
+      "result_quote": "only that layer changes"
+    }
+  ],
+  "pending_questions": [
+    {
+      "id": "q1",
+      "question": "A segment append is torn by kill -9. How does scanSegment decide the record is incomplete, and why cannot a committed row be lost by truncating it?",
+      "status": "open"
+    },
+    {
+      "id": "q2",
+      "question": "Checkpoint does compact -> rename -> truncate WAL. What happens if kill lands before/after the rename, and why can the order not be reversed?",
+      "status": "open"
+    }
+  ],
+  "retrospective": {
+    "notes": "The student drove constraint discovery (language, submission route) and restated the three core semantics before code existed. The ARIES-style answer for the torn-COMMIT case was correct in isolation but assumed steal/no-force page flushing, which this implementation does not use; that gap is the most valuable recorded discussion because it ties theory to the concrete design."
+  },
+  "limitations": [
+    "Official driver/wire protocol was never published; the JSON-per-line and TSV adapters are placeholders.",
+    "ANN mode is a no-op (exact scan); recall is trivially 1.0 but the performance benefit is absent.",
+    "The primary-key index (pk -> segment offset) stays in memory; a table whose index alone exceeds the memory budget is not handled.",
+    "Docker build was not executed locally: no docker daemon in WSL and sudo requires interactive authentication."
+  ]
 }
