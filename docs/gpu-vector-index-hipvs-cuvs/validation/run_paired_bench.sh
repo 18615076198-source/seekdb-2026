@@ -224,8 +224,8 @@ start_observer()
       --data-dir "$run_dir/store" \
       --base-dir "$run_dir" \
       --parameter __min_full_resource_pool_memory=2147483648 \
-      --parameter memory_budget=24G \
-      --parameter datafile_size=64G \
+      --parameter memory_budget=16G \
+      --parameter datafile_size=20G \
       --parameter cpu_count=24 \
       --parameter local_ip=127.0.0.1 \
       >"$log" 2>&1 &
