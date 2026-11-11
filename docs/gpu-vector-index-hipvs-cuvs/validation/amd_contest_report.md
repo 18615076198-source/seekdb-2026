@@ -54,14 +54,38 @@ contest scores. It needs no third-party python packages: the dataset is
 generated from a fixed seed, and the exact ground truth is produced by seekdb
 itself with a non-APPROXIMATE kNN scan before any vector index exists.
 
+Both sides must be built from their own tree, bridge included — this branch
+changes `tools/hipvs_bridge`, so reusing the candidate bridge for the baseline
+would benchmark the optimised bridge against itself.
+
 ```bash
-LD_LIBRARY_PATH=/work/bridge:/opt/hipvs/lib:/opt/rocm/lib \
-  docs/gpu-vector-index-hipvs-cuvs/validation/run_paired_bench.sh \
-  --baseline   /work/build-v5/build_release/src/observer/seekdb \
-  --candidate  /work/build-cand/build_release/src/observer/seekdb \
-  --bridge     /work/bridge/libseekdb_cuvs_bridge.so \
+# frozen V5 baseline
+git worktree add /work/v5 634888d9b037153fa143d2c913ba4b25503e1d62
+HIPVS_ROOT=/opt/hipvs ROCM_ROOT=/opt/rocm \
+  /work/v5/tools/hipvs_bridge/build.sh /work/bridge-v5/libseekdb_cuvs_bridge.so
+( cd /work/v5 && cmake -S . -B build_release -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DOB_ENABLE_UNITY=ON -DOB_USE_LLD=ON -DOB_BUILD_CUVS=ON \
+    -DOB_BUILD_CUVS_TRACE=OFF \
+    -DCUVS_BRIDGE_LIB=/work/bridge-v5/libseekdb_cuvs_bridge.so && \
+  cmake --build build_release --target seekdb -j64 )
+
+# candidate
+HIPVS_ROOT=/opt/hipvs ROCM_ROOT=/opt/rocm \
+  tools/hipvs_bridge/build.sh /work/bridge-cand/libseekdb_cuvs_bridge.so
+cmake -S . -B build_release -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DOB_ENABLE_UNITY=ON -DOB_USE_LLD=ON -DOB_BUILD_CUVS=ON \
+  -DOB_BUILD_CUVS_TRACE=OFF \
+  -DCUVS_BRIDGE_LIB=/work/bridge-cand/libseekdb_cuvs_bridge.so
+cmake --build build_release --target seekdb -j64
+
+# paired run
+docs/gpu-vector-index-hipvs-cuvs/validation/run_paired_bench.sh \
+  --baseline        /work/v5/build_release/src/observer/seekdb \
+  --baseline-bridge /work/bridge-v5/libseekdb_cuvs_bridge.so \
+  --candidate       /work/build_release/src/observer/seekdb \
+  --candidate-bridge /work/bridge-cand/libseekdb_cuvs_bridge.so \
   --base-dir   /tmp/seekdb-paired \
-  --evidence   /work/paired-evidence \
+  --evidence   /work/paired-evidence-dim128 \
   --port       2981 \
   --n 250000 --dim 128 --nq 4096 --gt-queries 256
 ```

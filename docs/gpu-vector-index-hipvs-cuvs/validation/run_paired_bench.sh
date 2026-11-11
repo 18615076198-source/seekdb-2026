@@ -27,9 +27,10 @@ set -Eeuo pipefail
 usage()
 {
   cat <<'EOF'
-Usage: run_paired_bench.sh --baseline PATH --candidate PATH --bridge PATH
+Usage: run_paired_bench.sh --baseline PATH --candidate PATH --candidate-bridge PATH
                            --base-dir PATH --port PORT --evidence PATH
-                           [--baseline-name NAME] [--candidate-name NAME]
+                           [--baseline-bridge PATH] [--baseline-name NAME]
+                           [--candidate-name NAME]
                            [--n 250000] [--dim 128] [--nq 4096] [--gt-queries 256]
                            [--k 10] [--k 100]
                            [--base-tsv PATH] [--query-tsv PATH]
@@ -38,7 +39,12 @@ Usage: run_paired_bench.sh --baseline PATH --candidate PATH --bridge PATH
 
   --baseline      seekdb observer binary built from the frozen V5 commit
   --candidate     seekdb observer binary built from the candidate commit
-  --bridge        libseekdb_cuvs_bridge.so used by both observers
+  --candidate-bridge  libseekdb_cuvs_bridge.so built from the candidate tree
+  --baseline-bridge   libseekdb_cuvs_bridge.so built from the frozen V5 commit.
+                  Defaults to --candidate-bridge only when the branch does not
+                  touch tools/hipvs_bridge; otherwise the two MUST differ or the
+                  baseline runs with the candidate's accelerated bridge and the
+                  comparison is meaningless.
   --base-dir      scratch directory for observer data dirs and generated data
   --evidence      directory for logs, traces and result tables
   --n / --dim     synthetic dataset size (default 250000 x 128)
@@ -60,6 +66,7 @@ EOF
 BASELINE=""
 CANDIDATE=""
 BRIDGE=""
+BASELINE_BRIDGE=""
 BASE_DIR=""
 PORT=""
 EVIDENCE=""
@@ -81,6 +88,8 @@ while (($# > 0)); do
     --baseline)        BASELINE=$2; shift 2 ;;
     --candidate)       CANDIDATE=$2; shift 2 ;;
     --bridge)          BRIDGE=$2; shift 2 ;;
+    --candidate-bridge) BRIDGE=$2; shift 2 ;;
+    --baseline-bridge) BASELINE_BRIDGE=$2; shift 2 ;;
     --base-dir)        BASE_DIR=$2; shift 2 ;;
     --port)            PORT=$2; shift 2 ;;
     --evidence)        EVIDENCE=$2; shift 2 ;;
@@ -109,7 +118,9 @@ done
 [[ "$PORT" =~ ^[0-9]+$ ]] || { echo "missing or invalid --port" >&2; exit 2; }
 [[ "$N" =~ ^[0-9]+$ && "$DIM" =~ ^[0-9]+$ && "$NQ" =~ ^[0-9]+$ && "$GT_QUERIES" =~ ^[0-9]+$ ]] \
   || { echo "invalid numeric argument" >&2; exit 2; }
-[[ -f "$BRIDGE" ]] || { echo "bridge does not exist: $BRIDGE" >&2; exit 2; }
+[[ -f "$BRIDGE" ]] || { echo "candidate bridge does not exist: $BRIDGE" >&2; exit 2; }
+[[ -n "$BASELINE_BRIDGE" ]] || BASELINE_BRIDGE=$BRIDGE
+[[ -f "$BASELINE_BRIDGE" ]] || { echo "baseline bridge does not exist: $BASELINE_BRIDGE" >&2; exit 2; }
 if (( SKIP_BASELINE == 0 )) && [[ ! -x "$BASELINE" ]]; then
   echo "baseline observer is not executable: $BASELINE" >&2; exit 2
 fi
@@ -193,9 +204,10 @@ PY
 start_observer()
 {
   local observer=$1
-  local run_dir=$2
-  local log=$3
-  local trace=$4
+  local bridge=$2
+  local run_dir=$3
+  local log=$4
+  local trace=$5
 
   rm -rf "$run_dir"
   mkdir -p "$run_dir"
@@ -203,7 +215,7 @@ start_observer()
 
   ulimit -n 65535 2>/dev/null || true
   env -u OB_VSAG_USE_CUVS \
-      "LD_LIBRARY_PATH=$(dirname "$BRIDGE"):/opt/hipvs/lib:/opt/rocm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+      "LD_LIBRARY_PATH=$(dirname "$bridge"):/opt/hipvs/lib:/opt/rocm/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
       "OB_VSAG_TRACE=1" \
       "OB_VSAG_TRACE_FILE=$trace" \
       "$observer" \
@@ -305,12 +317,19 @@ run_variant()
 {
   local name=$1
   local observer=$2
+  local bridge=$3
   local run_root=$BASE_DIR/$name
   LOG=$EVIDENCE/observer-$name.log
   local trace=$EVIDENCE/trace-$name.log
 
   say "=== variant: $name ==="
-  start_observer "$observer" "$run_root" "$LOG" "$trace"
+  say "$name: observer=$observer"
+  if [[ "$bridge" == "$BASELINE_BRIDGE" ]]; then
+    say "$name: bridge=$bridge (same library for both variants)"
+  else
+    say "$name: bridge=$bridge"
+  fi
+  start_observer "$observer" "$bridge" "$run_root" "$LOG" "$trace"
   say "$name: observer up on port $PORT (pid $OBS_PID)"
 
   sql "create database if not exists $DB;
@@ -534,10 +553,10 @@ if (( GT_QUERIES == 0 )); then
 fi
 
 if (( SKIP_BASELINE == 0 )); then
-  run_variant "$BASELINE_NAME" "$BASELINE"
+  run_variant "$BASELINE_NAME" "$BASELINE" "$BASELINE_BRIDGE"
 fi
 if (( SKIP_CANDIDATE == 0 )); then
-  run_variant "$CANDIDATE_NAME" "$CANDIDATE"
+  run_variant "$CANDIDATE_NAME" "$CANDIDATE" "$BRIDGE"
 fi
 
 say "results:"
