@@ -70,7 +70,7 @@ For a CPU-only build, leave the defaults or pass:
 
 ## AMD contest tuning
 
-The contest branch keeps the V5 CAGRA graph degree at 128 and reduces the NN-Descent refinement budget, which is the dominant build-side cost. The 128-dimensional SIFT workload uses an intermediate graph degree of 192 and 64 refinement iterations (measured 1.86x on that dataset alone, recall gates passing). The 256-dimensional Hidden workload keeps the V5 intermediate graph degree and trims iterations from 100 to 80 first, because it carries 60% of the combined score while its recall headroom against the baseline is only 0.005; further reductions are applied one step at a time and validated against the recall-delta gate before going deeper.
+The contest branch keeps the V5 CAGRA graph degree at 128 and tunes the NN-Descent refinement budget by input dimension. The 128-dimensional SIFT workload uses an intermediate graph degree of 192 and 64 refinement iterations; the 256-dimensional Hidden workload keeps 256 and 100 to protect recall on the harder workload.
 
 The bridge also reuses the CAGRA search-parameter object and device scratch buffers for the lifetime of an index handle. Queries are serialized per handle, so the cached resources remain safe while repeated single-row queries avoid repeated parameter creation and device allocation.
 

@@ -51,27 +51,16 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   /*
-   * NN-Descent iteration count is the dominant build-side knob: the refinement
-   * rounds scale linearly with it while the intermediate graph degree scales
-   * the work per round. The V5 baseline runs 100 rounds for every dimension,
-   * which is far past convergence on 250K points, so both shapes get a smaller
-   * budget here.
-   *
-   * 128-d (SIFT250K) was validated at 192/64 in the previous submission
-   * (measured 1.86x on that dataset alone, recall gates passed).
-   *
-   * 256-d (Hidden250K) keeps the V5 intermediate graph degree for now and only
-   * trims the iteration count from 100 to 80. That shape carries 60% of the
-   * combined score and its recall headroom against the baseline is only 0.005,
-   * so it is being reduced one step at a time: 80 -> 72 -> 64, checking the
-   * recall delta gate after each submission before going further.
+   * SIFT250K is 128-dimensional and has ample recall headroom in the V5
+   * baseline. Use a smaller refinement budget there; keep the V5 settings
+   * for the 256-dimensional Hidden250K workload.
    */
   if (dim <= 128) {
     h->ip->intermediate_graph_degree = 192;
     h->ip->nn_descent_niter = 64;
   } else {
     h->ip->intermediate_graph_degree = 256;
-    h->ip->nn_descent_niter = 80;
+    h->ip->nn_descent_niter = 100;
   }
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
