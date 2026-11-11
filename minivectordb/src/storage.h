@@ -70,14 +70,33 @@ inline RedoOp readRedo(Reader &r) {
   return op;
 }
 
+inline void applyRedoOp(std::unordered_map<std::string, Table> &tables, const RedoOp &op) {
+  std::string k = lower(op.table);
+  if (op.type == OP_CREATE) {
+    if (tables.count(k)) return;
+    Table t;
+    t.name = op.table;
+    t.cols = op.cols;
+    t.pk = op.pk;
+    tables[k] = std::move(t);
+  } else if (op.type == OP_UPSERT) {
+    auto it = tables.find(k);
+    if (it == tables.end()) return;
+    it->second.putRow(op.key, op.row);
+  } else if (op.type == OP_DELETE) {
+    auto it = tables.find(k);
+    if (it == tables.end()) return;
+    it->second.delRow(op.key);
+  }
+}
+
 class Storage {
  public:
   ~Storage() { closeFd(); }
 
   const std::string &dir() const { return dir_; }
 
-  bool open(const std::string &dir, std::unordered_map<std::string, Table> &tables,
-            std::vector<RedoOp> &recovered, std::string &err) {
+  bool open(const std::string &dir, std::unordered_map<std::string, Table> &tables, std::string &err) {
     dir_ = dir;
     if (::mkdir(dir_.c_str(), 0755) != 0 && errno != EEXIST) {
       err = std::string("cannot create data dir: ") + std::strerror(errno);
@@ -89,7 +108,7 @@ class Storage {
       err = std::string("cannot open wal: ") + std::strerror(errno);
       return false;
     }
-    replayWal(recovered);
+    replayWal(tables);
     return true;
   }
 
@@ -120,18 +139,33 @@ class Storage {
     if (dir_.empty()) return;
     for (auto &kv : tables) {
       Table &t = kv.second;
-      // Hot rows and tombstones both live only in memory, so any of them must be
-      // merged into the segment before the snapshot drops the WAL.
-      if (t.spilled && (!t.rows.empty() || !t.dead.empty())) t.compactTo(t.segPath);
+      // Append hot rows instead of rewriting the whole segment: shutdown time is
+      // then proportional to the recent writes, not to the table size. Tombstones
+      // are persisted in the snapshot below.
+      if (t.spilled && !t.rows.empty()) t.spillHot();
     }
     std::string tmp = dir_ + "/snapshot.tmp";
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return;
-    Buf b;
-    b.d = "MVDB02";
-    b.u32((uint32_t)tables.size());
+    // Stream the snapshot: building it in one string doubles peak memory for
+    // large in-memory tables.
+    std::string out;
+    out.reserve(1u << 20);
+    auto flush = [&](bool force) {
+      if (out.size() >= (1u << 20) || (force && !out.empty())) {
+        writeAllFd(fd, out.data(), out.size());
+        out.clear();
+      }
+    };
+    auto put = [&](const Buf &b) { out.append(b.d); flush(false); };
+
+    Buf h;
+    h.d = "MVDB02";
+    h.u32((uint32_t)tables.size());
+    put(h);
     for (const auto &kv : tables) {
       const Table &t = kv.second;
+      Buf b;
       b.str(t.name);
       b.u32((uint32_t)t.cols.size());
       for (const auto &c : t.cols) {
@@ -148,6 +182,8 @@ class Storage {
         if (slash != std::string::npos) base = base.substr(slash + 1);
         b.str(base);
         b.u32((uint32_t)t.order.size());
+        b.u32((uint32_t)t.dead.size());
+        for (int64_t d : t.dead) b.i64(d);
       } else {
         Table &mt = const_cast<Table &>(t);
         std::vector<Value> row;
@@ -155,15 +191,21 @@ class Storage {
         for (int64_t k : t.order)
           if (mt.getRow(k, row)) nlive++;
         b.u32(nlive);
+        put(b);
+        Buf rowb;
         for (int64_t k : t.order) {
           if (!mt.getRow(k, row)) continue;
-          b.i64(k);
-          b.u32((uint32_t)row.size());
-          for (const auto &v : row) b.value(v);
+          rowb.d.clear();
+          rowb.i64(k);
+          rowb.u32((uint32_t)row.size());
+          for (const auto &v : row) rowb.value(v);
+          put(rowb);
         }
+        continue;
       }
+      put(b);
     }
-    writeAllFd(fd, b.d.data(), b.d.size());
+    flush(true);
     ::fdatasync(fd);
     ::close(fd);
     std::string cur = dir_ + "/snapshot.bin";
@@ -230,6 +272,8 @@ class Storage {
         std::string base = r.str();
         r.u32();
         if (!base.empty()) t.openSegment(dir_ + "/" + base);
+        uint32_t nd = r.u32();
+        for (uint32_t d = 0; d < nd && r.ok; ++d) t.dead.insert(r.i64());
       } else {
         uint32_t nr = r.u32();
         for (uint32_t k = 0; k < nr && r.ok; ++k) {
@@ -238,46 +282,52 @@ class Storage {
           std::vector<Value> row;
           for (uint32_t v = 0; v < nv && r.ok; ++v) row.push_back(r.value());
           if (!r.ok) break;
-          t.rows[key] = std::move(row);
-          t.order.push_back(key);
+          t.putRow(key, std::move(row));
         }
       }
       if (r.ok) tables[lower(t.name)] = std::move(t);
     }
   }
 
-  void replayWal(std::vector<RedoOp> &recovered) {
+  // Streamed replay: never materialise the whole WAL, and apply each committed
+  // transaction directly, so recovery memory stays bounded by one transaction.
+  void replayWal(std::unordered_map<std::string, Table> &tables) {
     struct stat st {};
     if (::fstat(walFd_, &st) != 0 || st.st_size == 0) return;
-    std::string data((size_t)st.st_size, '\0');
-    size_t got = 0;
-    while (got < data.size()) {
-      ssize_t r = ::pread(walFd_, &data[got], data.size() - got, (off_t)got);
-      if (r <= 0) break;
-      got += (size_t)r;
-    }
-    data.resize(got);
-    size_t off = 0;
+    const size_t kChunk = 1u << 20;
+    std::string buf;
+    size_t fileOff = 0, good = 0;
     std::vector<RedoOp> pending;
-    size_t good = 0;
-    while (off + 8 <= data.size()) {
-      uint32_t len, crc;
-      std::memcpy(&len, data.data() + off, 4);
-      std::memcpy(&crc, data.data() + off + 4, 4);
-      if (len > (1u << 30) || off + 8 + len > data.size()) break;
-      if (crc32Of(data.data() + off + 8, len) != crc) break;
-      Reader r(data.data() + off + 8, len);
-      RedoOp op = readRedo(r);
-      if (!r.ok) break;
-      off += 8 + len;
-      good = off;
-      if (op.type == OP_COMMIT) {
-        for (auto &o : pending) recovered.push_back(std::move(o));
-        pending.clear();
-      } else {
-        pending.push_back(std::move(op));
+    bool corrupt = false;
+    while (!corrupt && fileOff < (size_t)st.st_size) {
+      size_t want = std::min(kChunk, (size_t)st.st_size - fileOff);
+      size_t old = buf.size();
+      buf.resize(old + want);
+      ssize_t r = ::pread(walFd_, &buf[old], want, (off_t)fileOff);
+      if (r <= 0) break;
+      buf.resize(old + (size_t)r);
+      fileOff += (size_t)r;
+      size_t off = 0;
+      while (off + 8 <= buf.size()) {
+        uint32_t len, crc;
+        std::memcpy(&len, buf.data() + off, 4);
+        std::memcpy(&crc, buf.data() + off + 4, 4);
+        if (len > (1u << 30) || off + 8 + len > buf.size()) break;
+        if (crc32Of(buf.data() + off + 8, len) != crc) { corrupt = true; break; }
+        Reader rr(buf.data() + off + 8, len);
+        RedoOp op = readRedo(rr);
+        if (!rr.ok) { corrupt = true; break; }
+        off += 8 + len;
+        good += 8 + len;
+        if (op.type == OP_COMMIT) {
+          for (auto &o : pending) applyRedoOp(tables, o);
+          pending.clear();
+        } else {
+          pending.push_back(std::move(op));
+        }
       }
+      buf.erase(0, off);
     }
-    if (good < data.size()) ::ftruncate(walFd_, (off_t)good);
+    if (good < (size_t)st.st_size) ::ftruncate(walFd_, (off_t)good);
   }
 };

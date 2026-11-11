@@ -19,16 +19,14 @@ int main(int argc, char **argv) {
 
   Storage storage;
   std::unordered_map<std::string, Table> tables;
-  std::vector<RedoOp> recovered;
   std::string err;
-  if (!storage.open(dataDir, tables, recovered, err)) {
+  if (!storage.open(dataDir, tables, err)) {
     std::cerr << "mvdb: " << err << "\n";
     return 2;
   }
 
   Engine eng(&storage);
   eng.tables() = std::move(tables);
-  eng.applyRecovered(recovered);
 
   std::signal(SIGTERM, onTerm);
   std::signal(SIGINT, onTerm);
@@ -54,7 +52,12 @@ int main(int argc, char **argv) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
     std::string s = trim(line);
     if (s.empty()) continue;
-    if (s.rfind("--", 0) == 0) continue;  // driver directive placeholder, never a SQL statement
+    if (s.rfind("--", 0) == 0) {
+      // The driver may forward directives instead of consuming them. "--restart"
+      // is documented as "close gracefully and wait for exit".
+      if (s.rfind("--restart", 0) == 0 || s.rfind("--quit", 0) == 0 || s.rfind("--exit", 0) == 0) break;
+      continue;
+    }
     auto t0 = std::chrono::steady_clock::now();
     try {
       Parser p(s);

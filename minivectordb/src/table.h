@@ -21,6 +21,7 @@ struct Table {
   std::vector<ColumnDef> cols;
   int pk = -1;
   std::unordered_map<int64_t, std::vector<Value>> rows;
+  size_t hotBytes_ = 0;  // incremental accounting; never rescan all rows per statement
   std::vector<int64_t> order;
 
   bool spilled = false;
@@ -47,6 +48,7 @@ struct Table {
     cols = std::move(o.cols);
     pk = o.pk;
     rows = std::move(o.rows);
+    hotBytes_ = o.hotBytes_;
     order = std::move(o.order);
     spilled = o.spilled;
     segPath = std::move(o.segPath);
@@ -107,30 +109,36 @@ struct Table {
   void putRow(int64_t k, std::vector<Value> row) {
     auto it = rows.find(k);
     if (it != rows.end()) {
+      size_t before = rowBytes(it->second) + 32;
+      hotBytes_ -= before < hotBytes_ ? before : hotBytes_;
       it->second = std::move(row);
+      hotBytes_ += rowBytes(it->second) + 32;
       return;
     }
     // A key may still sit in `order` after a delete (we do not compact on every
-    // delete), so remember deleted keys to avoid adding duplicates on re-insert.
+    // delete), so remember deleted keys to avoid re-adding duplicates.
     bool known = dead.erase(k) > 0;
     if (!known && spilled && offsets.find(k) != offsets.end()) known = true;
+    size_t bytes = rowBytes(row) + 32;
     rows.emplace(k, std::move(row));
+    hotBytes_ += bytes;
     if (!known) order.push_back(k);
   }
 
   void delRow(int64_t k) {
-    bool visible = rows.find(k) != rows.end() || (spilled && offsets.find(k) != offsets.end());
-    rows.erase(k);
+    auto it = rows.find(k);
+    bool visible = it != rows.end() || (spilled && offsets.find(k) != offsets.end());
+    if (it != rows.end()) {
+      size_t bytes = rowBytes(it->second) + 32;
+      hotBytes_ -= bytes < hotBytes_ ? bytes : hotBytes_;
+      rows.erase(it);
+    }
     if (visible) dead.insert(k);
   }
 
-  size_t hotBytes() const {
-    size_t n = 0;
-    for (const auto &kv : rows) n += rowBytes(kv.second) + 32;
-    return n;
-  }
+  size_t hotBytes() const { return hotBytes_; }
 
-  size_t memBytes() const { return hotBytes() + order.size() * 8 + offsets.size() * 24 + dead.size() * 16; }
+  size_t memBytes() const { return hotBytes_ + order.size() * 8 + offsets.size() * 24 + dead.size() * 16; }
 
   // Merge old segment + hot rows into a new immutable segment (atomic rename).
   bool compactTo(const std::string &path) {
@@ -164,6 +172,7 @@ struct Table {
     offsets = std::move(noff);
     order = std::move(norder);
     rows.clear();
+    hotBytes_ = 0;
     dead.clear();
     spilled = true;
     segPath = path;
@@ -179,6 +188,7 @@ struct Table {
       std::fprintf(stderr, "SPILLHOT rows=%zu order=%zu fd=%d\n", rows.size(), order.size(), segFd);
     for (auto &kv : rows) appendRecord(kv.first, kv.second);
     rows.clear();
+    hotBytes_ = 0;
     rows.rehash(0);
 #ifdef __GLIBC__
     malloc_trim(0);
