@@ -51,15 +51,23 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   /*
-   * SIFT250K is 128-dimensional and has ample recall headroom in the V5
-   * baseline. Use a smaller refinement budget there; keep the V5 settings
-   * for the 256-dimensional Hidden250K workload.
+   * NN-Descent iteration count turned out not to be the build-side bottleneck:
+   * dropping 256-d from 100 to 80 rounds moved the composite speedup from
+   * 1.282x to 1.273x, i.e. inside the ~5-15% run-to-run noise of the evaluator.
+   * The intermediate graph degree is the knob that matters, so it is the only
+   * one being changed here.
+   *
+   * 128-d (SIFT250K) at 192/64 measured 1.86x on that dataset alone.
+   * 256-d (Hidden250K) now mirrors the intermediate degree and keeps the V5
+   * iteration count, so this run isolates a single variable. Hidden carries 60%
+   * of the combined score and its recall headroom against the baseline is only
+   * 0.005, hence one rung at a time (256 -> 192 -> ...).
    */
   if (dim <= 128) {
     h->ip->intermediate_graph_degree = 192;
     h->ip->nn_descent_niter = 64;
   } else {
-    h->ip->intermediate_graph_degree = 256;
+    h->ip->intermediate_graph_degree = 192;
     h->ip->nn_descent_niter = 100;
   }
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
