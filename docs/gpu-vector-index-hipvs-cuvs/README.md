@@ -76,6 +76,16 @@ The bridge also reuses the CAGRA search-parameter object and device scratch buff
 
 The official evaluator remains the source of performance numbers. Run the smoke and persistence validation scripts first, then compare the candidate against the same-round V5 baseline on the AMD evaluation machine.
 
+For the paired comparison itself use
+[`validation/run_paired_bench.sh`](validation/run_paired_bench.sh). It drives both
+observers over the same dataset and SQL, times the contest window (`CREATE
+VECTOR INDEX` through the first fixed query), measures Top-10/Top-100 QPS as
+4096 single-row statements, scores recall against an exact scan computed before
+any index exists, and lifts `build_us`/`graph_bytes` out of the server log so
+the GPU build phase is separated from the surrounding CPU and snapshot work.
+The same log line is the quickest way to tell whether a build is GPU-bound or
+bound by the seekdb-side row scan and snapshot I/O.
+
 ## SQL usage
 
 Per-index GPU opt-in:
