@@ -195,6 +195,13 @@
       "command": "MVDB_CRASH_BEFORE_SNAPSHOT_RENAME=1 / MVDB_CRASH_BEFORE_WAL_TRUNC=1 / kill -9 then truncate t.seg by 5 bytes",
       "output": "FAILS: 0; crash before snapshot rename: rows [[1],[2]] survive; crash before WAL truncate: no duplication; torn segment tail: [[1],[2]] recovered",
       "note": "hooks call _exit(9) at the two windows described in Q2; the torn-tail case cuts the last record so the row only exists in the WAL"
+    },
+    {
+      "id": "e10",
+      "what": "fuzz the server for statements that never get a response",
+      "command": "python3 tests/fuzz.py (3000 random statements, 2s timeout each)",
+      "output": "HANG at 66: '--'  -> after the fix: fuzz ok: 3000 statements",
+      "note": "a bare '--' line (driver directive or SQL comment forwarded as a statement) produced no output at all, which is exactly the 'JSON response timeout' failure the platform reported; directives now get '{}' and the reader tolerates a missing trailing newline"
     }
   ],
   "student_evidence": [
