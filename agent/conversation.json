@@ -221,7 +221,7 @@
       "student_pointer": "/conversations/2/content",
       "student_quote": "语句失败只撤销这条语句的写（语句级 savepoint），但是事务还是继续",
       "result_pointer": "/experiments/1/output",
-      "result_quote": "SUMMARY PASS=20 FAIL=0 MISSING=0"
+      "result_quote": "PASS=20 FAIL=0 MISSING=0"
     },
     {
       "id": "ev3",
