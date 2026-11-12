@@ -270,8 +270,8 @@
     },
     {
       "id": "ev8",
-      "dimension": "technical_understanding",
-      "claim": "a torn segment append is detected by short reads and the committed row is recovered from the WAL",
+      "dimension": "experiment_feedback",
+      "claim": "student explained the torn-segment recovery hypothesis, then the fault-injection result confirmed the repair path",
       "student_pointer": "/conversations/15/content",
       "student_quote": "如果发生撕裂，说明进程是在 WAL 落盘后、段写完前被杀",
       "result_pointer": "/experiments/8/output",
