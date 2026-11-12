@@ -220,7 +220,7 @@
       "claim": "read-your-writes, statement-level savepoint, whole-transaction rollback",
       "student_pointer": "/conversations/2/content",
       "student_quote": "语句失败只撤销这条语句的写（语句级 savepoint），但是事务还是继续",
-      "result_pointer": "/experiments/0/output",
+      "result_pointer": "/experiments/1/output",
       "result_quote": "SUMMARY PASS=20 FAIL=0 MISSING=0"
     },
     {
