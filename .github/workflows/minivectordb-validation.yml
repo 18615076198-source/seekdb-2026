@@ -45,3 +45,10 @@ jobs:
       - name: Run bundled public cases
         run: |
           MVDB_BIN=$PWD/build/mvdb python3 minivectordb/tests/run_cases.py
+
+      - name: Run crash recovery matrix
+        run: |
+          MVDB_BIN=$PWD/build/mvdb python3 minivectordb/tests/crash_matrix.py
+      - name: Run spill and restart test
+        run: |
+          MVDB_BIN=$PWD/build/mvdb SPILL_N=20000 python3 minivectordb/tests/spill_test.py
