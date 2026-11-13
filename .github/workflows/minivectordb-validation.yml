@@ -41,3 +41,7 @@ jobs:
           assert rows[3]["rows"] == [[1, "你好"]], rows[3]
           assert rows[4] == {"id": 4, "ok": True}, rows[4]
           PY
+
+      - name: Run bundled public cases
+        run: |
+          MVDB_BIN=$PWD/build/mvdb python3 minivectordb/tests/run_cases.py
