@@ -115,7 +115,8 @@ def request(proc, ident, sql=None):
 def stop(proc):
     if proc.poll() is None:
         request(proc, 1, None)
-        stop(proc)
+        proc.stdin.close()
+        proc.wait(timeout=STMT_TIMEOUT)
 
 
 def run_case(name):
@@ -162,8 +163,7 @@ def run_case(name):
                 if msg:
                     diffs.append("[%d] %s\n    sql=%s" % (idx, msg, s[:160]))
             idx += 1
-        proc.stdin.close()
-        proc.wait(timeout=STMT_TIMEOUT)
+        stop(proc)
     except Timeout:
         diffs.append("timeout")
         proc.kill()
