@@ -15,14 +15,26 @@ def start(datadir, budget):
     env = dict(os.environ)
     env["MVDB_DATA_DIR"] = datadir
     env["MVDB_MEM_BUDGET_MB"] = str(budget)
-    return subprocess.Popen([BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+    p = subprocess.Popen([BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+    ready = json.loads(p.stdout.readline())
+    if ready != {"type": "ready"}:
+        p.kill()
+        raise RuntimeError("expected ready, got %r" % (ready,))
+    send.counter = 0
+    return p
 
 
 def send(p, sql):
-    p.stdin.write(sql + "\n")
+    send.counter += 1
+    req = {"id": send.counter, "op": "execute", "sql": sql, "search_mode": "exact"}
+    p.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
     p.stdin.flush()
-    return json.loads(p.stdout.readline())
+    got = json.loads(p.stdout.readline())
+    if got.get("id") != send.counter:
+        raise RuntimeError("response id mismatch: %r" % (got,))
+    return got
+send.counter = 0
 
 
 def vec(vals):
