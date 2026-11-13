@@ -3,6 +3,7 @@
 #include <cctype>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 
 struct JsonRequest {
   std::string id = "null";
@@ -89,11 +90,13 @@ inline bool parseJsonRequest(const std::string &line, JsonRequest &req) {
   jsonSkipWs(line, p);
   if (p >= line.size() || line[p++] != '{') return false;
   bool haveId = false;
+  std::unordered_set<std::string> keys;
   while (true) {
     jsonSkipWs(line, p);
     if (p < line.size() && line[p] == '}') { ++p; break; }
     std::string key, raw;
     if (!jsonParseString(line, p, key)) return false;
+    if (!keys.insert(key).second) return false;
     jsonSkipWs(line, p);
     if (p >= line.size() || line[p++] != ':') return false;
     if (!jsonParseRaw(line, p, raw)) return false;
