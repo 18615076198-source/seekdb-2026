@@ -13,8 +13,7 @@
     docker build -t minivectordb .
     docker run --rm -i -v /tmp/mvdb-data:/data minivectordb
 
-程序从 stdin 读 SQL（一行一条，`;;` 可选），stdout 每条语句输出一个结果，stderr 输出日志。
-默认数据目录 `/data`，可用 `MVDB_DATA_DIR` 覆盖。
+程序按题包 JSONL 协议与 stdin/stdout 通信：启动先输出 `{"type":"ready"}`，随后接收 `{"id":...,"op":"execute","sql":"...","search_mode":"exact|ann"}`，关闭使用 `{"id":...,"op":"shutdown"}`。每条响应原样回传 `id`、包含布尔 `ok`，日志只写 stderr。默认数据目录 `/data`，可用 `MVDB_DATA_DIR` 覆盖。
 
 ## 运行参数（环境变量）
 
@@ -22,7 +21,7 @@
 | --- | --- | --- |
 | `MVDB_DATA_DIR` | `/data` | 数据目录（wal.bin / snapshot.bin / *.seg） |
 | `MVDB_MEM_BUDGET_MB` | `512` | hot 行内存预算；超过一半即把最大表落段 |
-| `MVDB_PROTOCOL` | `json` | 输出协议：`json`（本地自测）或 `tsv`（占位） |
+| `MVDB_PROTOCOL` | （已移除） | 统一使用题包 JSONL 协议 |
 
 ## SQL 支持
 
@@ -33,7 +32,7 @@
 - `BEGIN` / `COMMIT` / `ROLLBACK`
 - `CREATE VECTOR INDEX ...` 目前接受但不起作用（exact 结果始终正确）
 
-错误以 `{"error":"<code>"}` 返回，例如 `duplicate_key`、`unsupported_sql`、`dimension_mismatch`。
+错误以 `{"id":...,"ok":false,"error":{"code":"<code>","message":"..."}}` 返回，例如 `duplicate_key`、`unsupported_sql`、`dimension_mismatch`。
 
 ## 数据与恢复
 
