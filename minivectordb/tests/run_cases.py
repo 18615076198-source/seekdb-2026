@@ -100,10 +100,10 @@ def start(datadir):
     return p
 
 
-def request(proc, ident, sql=None):
+def request(proc, ident, sql=None, mode="exact"):
     req = {"id": ident, "op": "execute" if sql is not None else "shutdown"}
     if sql is not None:
-        req.update(sql=sql, search_mode="exact")
+        req.update(sql=sql, search_mode=mode)
     proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
     proc.stdin.flush()
     got = json.loads(proc.stdout.readline())
@@ -131,7 +131,7 @@ def run_case(name):
     os.makedirs(datadir, exist_ok=True)
 
     proc = start(datadir)
-    diffs, idx = [], 0
+    mode, diffs, idx = "exact", [], 0
     try:
         signal.signal(signal.SIGALRM, _alarm)
         for line in raw:
@@ -144,9 +144,13 @@ def run_case(name):
                     if proc.returncode != 0:
                         diffs.append("restart exit code %d stderr=%r" % (proc.returncode, proc.stderr.read()[-300:]))
                     proc = start(datadir)
+                    mode = "exact"
+                elif s.lower().startswith("--mode"):
+                    parts = s.split()
+                    mode = parts[1].lower() if len(parts) > 1 else "exact"
                 continue
             signal.setitimer(signal.ITIMER_REAL, STMT_TIMEOUT)
-            out = json.dumps(request(proc, idx + 1, s), ensure_ascii=False)
+            out = json.dumps(request(proc, idx + 1, s, mode), ensure_ascii=False)
             signal.setitimer(signal.ITIMER_REAL, 0)
             if not out.strip():
                 diffs.append("[%d] no output for %s (stderr=%r)" % (idx, s[:80], proc.stderr.read()[-200:]))
