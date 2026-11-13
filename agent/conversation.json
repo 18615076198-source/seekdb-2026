@@ -309,8 +309,8 @@
     "notes": "The student drove constraint discovery (language, submission route) and restated the three core semantics before code existed. The ARIES-style answer for the torn-COMMIT case was correct in isolation but assumed steal/no-force page flushing, which this implementation does not use; that gap is the most valuable recorded discussion because it ties theory to the concrete design."
   },
   "limitations": [
-    "Official driver/wire protocol was never published; the JSON-per-line and TSV adapters are placeholders.",
-    "ANN mode is a no-op (exact scan); recall is trivially 1.0 but the performance benefit is absent.",
+    "The standard JSONL handshake/execute/shutdown protocol is implemented from the published round2 protocol reference; the hidden formal driver and hidden inputs remain unavailable for local verification.",
+    "ANN mode currently uses the exact scan, so recall is correct but there is no approximate-search speedup.",
     "The primary-key index (pk -> segment offset) stays in memory; a table whose index alone exceeds the memory budget is not handled."
   ],
   "agent_explanations": [
