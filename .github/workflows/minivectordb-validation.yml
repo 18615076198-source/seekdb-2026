@@ -1,0 +1,43 @@
+name: MiniVectorDB validation
+
+on:
+  push:
+    branches:
+      - 2026-competition-round2
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build MiniVectorDB
+        run: |
+          cmake -S minivectordb -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j2
+      - name: Check Python harnesses
+        run: |
+          python3 -m py_compile             minivectordb/tests/run_cases.py             minivectordb/tests/crash_matrix.py             minivectordb/tests/spill_test.py
+      - name: JSONL protocol smoke test
+        run: |
+          rm -rf /tmp/mvdb-data
+          mkdir -p /tmp/mvdb-data
+          cat > /tmp/requests.jsonl <<'JSONL'
+          {"id":1,"op":"execute","sql":"CREATE TABLE docs (id BIGINT PRIMARY KEY, content VARCHAR(16));","search_mode":"exact"}
+          {"id":2,"op":"execute","sql":"INSERT INTO docs VALUES (1, '你好');","search_mode":"exact"}
+          {"id":3,"op":"execute","sql":"SELECT id, content FROM docs ORDER BY id;","search_mode":"exact"}
+          {"id":4,"op":"shutdown"}
+          JSONL
+          ./build/mvdb /tmp/mvdb-data < /tmp/requests.jsonl > /tmp/responses.jsonl
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows = [json.loads(line) for line in Path("/tmp/responses.jsonl").read_text().splitlines()]
+          assert rows[0] == {"type": "ready"}, rows
+          assert rows[1]["ok"] is True and rows[1]["id"] == 1, rows[1]
+          assert rows[2] == {"id": 2, "ok": True, "affected_rows": 1}, rows[2]
+          assert rows[3]["id"] == 3 and rows[3]["ok"] is True, rows[3]
+          assert rows[3]["columns"] == ["id", "content"], rows[3]
+          assert rows[3]["rows"] == [[1, "你好"]], rows[3]
+          assert rows[4] == {"id": 4, "ok": True}, rows[4]
+          PY
