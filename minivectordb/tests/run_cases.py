@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Local driver for the public mysqltest package.
 
-Protocol here is PROVISIONAL (one JSON object per SQL line); the official driver
-and wire format are still unpublished. This harness also simulates --restart by
-closing stdin and relaunching the binary against the same data directory.
+The harness uses the round2 JSONL protocol and simulates --restart by
+sending shutdown, then relaunching against the same data directory.
 """
 import json, os, shutil, signal, subprocess, sys
 
@@ -63,8 +62,11 @@ def check(exp, got):
     if "error" in exp:
         if "error" not in got:
             return "expected error %r, got %r" % (exp["error"], got)
-        if got["error"] != exp["error"]:
-            return "expected error %r, got %r" % (exp["error"], got["error"])
+        expected = exp["error"]
+        actual = got["error"]
+        actual_code = actual.get("code") if isinstance(actual, dict) else actual
+        if actual_code != expected and actual != expected:
+            return "expected error %r, got %r" % (expected, actual)
         return None
     if "error" in got:
         return "unexpected error %r" % (got["error"],)
@@ -89,8 +91,31 @@ def check(exp, got):
 def start(datadir):
     env = dict(os.environ)
     env["MVDB_DATA_DIR"] = datadir
-    return subprocess.Popen([BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+    p = subprocess.Popen([BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+    ready = json.loads(p.stdout.readline())
+    if ready != {"type": "ready"}:
+        p.kill()
+        raise RuntimeError("expected ready, got %r" % (ready,))
+    return p
+
+
+def request(proc, ident, sql=None):
+    req = {"id": ident, "op": "execute" if sql is not None else "shutdown"}
+    if sql is not None:
+        req.update(sql=sql, search_mode="exact")
+    proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
+    proc.stdin.flush()
+    got = json.loads(proc.stdout.readline())
+    if got.get("id") != ident:
+        raise RuntimeError("response id mismatch: %r" % (got,))
+    return got
+
+
+def stop(proc):
+    if proc.poll() is None:
+        request(proc, 1, None)
+        stop(proc)
 
 
 def run_case(name):
@@ -114,16 +139,13 @@ def run_case(name):
                 continue
             if s.startswith("--"):
                 if s.startswith("--restart"):
-                    proc.stdin.close()
-                    proc.wait(timeout=STMT_TIMEOUT)
+                    stop(proc)
                     if proc.returncode != 0:
                         diffs.append("restart exit code %d stderr=%r" % (proc.returncode, proc.stderr.read()[-300:]))
                     proc = start(datadir)
                 continue
             signal.setitimer(signal.ITIMER_REAL, STMT_TIMEOUT)
-            proc.stdin.write(s + "\n")
-            proc.stdin.flush()
-            out = proc.stdout.readline()
+            out = json.dumps(request(proc, idx + 1, s), ensure_ascii=False)
             signal.setitimer(signal.ITIMER_REAL, 0)
             if not out.strip():
                 diffs.append("[%d] no output for %s (stderr=%r)" % (idx, s[:80], proc.stderr.read()[-200:]))
