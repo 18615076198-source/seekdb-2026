@@ -52,3 +52,7 @@ jobs:
       - name: Run spill and restart test
         run: |
           MVDB_BIN=$PWD/build/mvdb SPILL_N=20000 python3 minivectordb/tests/spill_test.py
+
+      - name: Build Docker image
+        run: |
+          docker build --tag minivectordb-ci .
