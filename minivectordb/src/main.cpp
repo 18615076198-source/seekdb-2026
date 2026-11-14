@@ -1,7 +1,9 @@
 #include "protocol.h"
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <poll.h>
 #include <string>
 
 static volatile sig_atomic_t g_stop = 0;
@@ -30,7 +32,18 @@ int main(int argc, char **argv) {
   proto.ready();
 
   std::string line;
-  while (!g_stop && std::getline(std::cin, line)) {
+  while (!g_stop) {
+    // Use a timed poll so SIGTERM can wake the loop even when stdin is idle.
+    // std::getline alone may remain blocked until the next byte arrives.
+    struct pollfd pfd { 0, POLLIN, 0 };
+    int pr = ::poll(&pfd, 1, 100);
+    if (pr == 0) continue;
+    if (pr < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (!(pfd.revents & (POLLIN | POLLHUP))) continue;
+    if (!std::getline(std::cin, line)) break;
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty()) continue;
 
