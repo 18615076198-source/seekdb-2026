@@ -58,9 +58,10 @@ jobs:
           docker build --tag minivectordb-ci .
       - name: Run Docker JSONL smoke test
         run: |
-          rm -rf .ci-data
-          mkdir .ci-data
-          docker run --rm -i --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=2g --memory-swap=2g --pids-limit=128 --volume "$PWD/.ci-data:/data" minivectordb-ci < /tmp/requests.jsonl > /tmp/docker-responses.jsonl
+          docker volume rm -f mvdb-ci-data >/dev/null 2>&1 || true
+          docker volume create mvdb-ci-data >/dev/null
+          docker run --rm -i --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --memory=2g --memory-swap=2g --pids-limit=128 --volume mvdb-ci-data:/data minivectordb-ci < /tmp/requests.jsonl > /tmp/docker-responses.jsonl
+          docker volume rm -f mvdb-ci-data >/dev/null
           python3 - <<'PY'
           import json
           from pathlib import Path
