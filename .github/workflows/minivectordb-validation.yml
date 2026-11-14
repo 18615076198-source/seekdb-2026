@@ -56,3 +56,15 @@ jobs:
       - name: Build Docker image
         run: |
           docker build --tag minivectordb-ci .
+      - name: Run Docker JSONL smoke test
+        run: |
+          rm -rf .ci-data
+          mkdir .ci-data
+          docker run --rm -i --network=none --volume "$PWD/.ci-data:/data" minivectordb-ci < /tmp/requests.jsonl > /tmp/docker-responses.jsonl
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows = [json.loads(line) for line in Path("/tmp/docker-responses.jsonl").read_text().splitlines()]
+          assert rows[0] == {"type": "ready"}, rows
+          assert rows[-1] == {"id": 4, "ok": True}, rows
+          PY
