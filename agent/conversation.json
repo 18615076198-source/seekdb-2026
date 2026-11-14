@@ -144,6 +144,11 @@
       "id": "a8",
       "speaker": "agent",
       "content": "Reviewed the protocol against STDIO_PROTOCOL.md with an independent conformance test. Found a deterministic deadlock: poll(fd)+getline can block after iostream reads ahead, so a pipelined batch answers only the first request. Replaced it with raw read()+line splitting; conformance now passes including a 3-request pipelined batch and a shutdown that exits 0 with no extra stdout. Also migrated the remaining harnesses (edge cases, checkpoint fault injection, large recovery, graceful shutdown, fuzz) to JSONL."
+    },
+    {
+      "id": "a9",
+      "speaker": "agent",
+      "content": "The two identical timeout reports pointed at the transport rather than the engine. Checked the protocol reference: the judge waits for a {\"type\":\"ready\"} line, then sends JSON requests with id/op/sql/search_mode and expects one JSON response per request, ending with a shutdown op. The teammate's JSONL implementation covers that; the review then found and fixed a pipelining deadlock in the reader."
     }
   ],
   "experiments": [
@@ -237,6 +242,13 @@
       "command": "protocol_check, run_cases, crash_matrix, spill_test, edge_cases, checkpoint_crash, fuzz",
       "output": "protocol FAILS 0; public 20/20; crash 5/5; spill 5/5; edge FAILS 0; checkpoint FAILS 0; fuzz 1500 statements ok",
       "note": ""
+    },
+    {
+      "id": "e14",
+      "what": "official submission feedback, identical on two different commits (d711d6f and 6c308c0)",
+      "command": "platform submission",
+      "output": "正确性门槛未通过（失败用例数：1）。原因：JSON response timeout（未及时收到JSON响应，请检查换行、flush和程序阻塞） × 1",
+      "note": "the repeated single-case timeout motivated a transport review; the process had been answering SQL lines without the {\"type\":\"ready\"} handshake the judge waits for"
     }
   ],
   "student_evidence": [
