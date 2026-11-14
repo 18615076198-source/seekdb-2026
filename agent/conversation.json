@@ -3,7 +3,7 @@
   "project": "MiniVectorDB (OceanBase 2026 competition, round2)",
   "language": "zh-CN",
   "synthetic": false,
-  "material_scope": "Draft assembled from the real working session on 2026-11-09/10. Student messages are verbatim. Agent turns are compressed summaries of what was actually said; commands and outputs are copied from real runs. Anything not executed is marked as planned or unanswered.",
+  "material_scope": "Assembled from the real working session 2026-11-09..14. Student messages are verbatim. Agent turns are compressed summaries of what was actually said. The JSONL protocol implementation and STDIO_PROTOCOL.md come from the teammate's commits on the same branch and are labelled speaker=teammate. Commands and outputs are copied from real runs; anything not executed is marked as planned or unanswered.",
   "problem_statement_summary": "Implement a single-node vector database: SQL subset (CREATE/INSERT/SELECT/UPDATE/DELETE, comparisons, AND, ORDER BY, LIMIT, L2_DISTANCE, filtered TopK), /data persistence, BEGIN/COMMIT/ROLLBACK, crash recovery; MySQL cases must all pass before performance and agent-prompt scoring.",
   "user_prompts": [
     {
@@ -37,6 +37,10 @@
     {
       "id": "p8",
       "content": "继续"
+    },
+    {
+      "id": "p9",
+      "content": "我的队友做好了第二项，你详细检查一下，完成第三项"
     }
   ],
   "design_notes": {
@@ -130,6 +134,16 @@
       "speaker": "student",
       "content": "顺序是：compact 写 tmp ， fdatasync ， rename ， fsync 目录 →，写快照 ， 截断 WAL。\n\nkill 在 rename 之前情况：旧段完好，tmp 是垃圾文件，WAL 没被截断，重启后用旧段并回放 WAL。\nkill 在 rename 之后、截断之前情况：新段已经完整持久（fsync 在 rename 之前完成），但是快照可能还是旧的， WAL 是超集。如果回放 WAL 是整行 after-image，是幂等的，重复应用结果不变。\n如果反过来先截断 WAL 再做 compact 是不行：WAL 是 checkpoint 之前唯一的权威副本，如果 compact 中途崩溃，已提交的行既不在段里也不在 WAL 里，会直接丢数据。所以必须“新状态完整可见之后，才能丢弃旧日志”。另外用 rename 避免半新半旧的段文件被当成有效状态。",
       "note": "final wording by the student, edited from the agent's draft"
+    },
+    {
+      "id": "t1",
+      "speaker": "teammate",
+      "content": "Implemented the JSONL stdio protocol from the round-2 protocol reference: {\"type\":\"ready\"} handshake before the first request, {id, op, sql, search_mode} requests, {id, ok, columns/rows | affected_rows | error} responses, and the shutdown op. Added STDIO_PROTOCOL.md, a GitHub Actions validation workflow, and moved the local harnesses to JSONL."
+    },
+    {
+      "id": "a8",
+      "speaker": "agent",
+      "content": "Reviewed the protocol against STDIO_PROTOCOL.md with an independent conformance test. Found a deterministic deadlock: poll(fd)+getline can block after iostream reads ahead, so a pipelined batch answers only the first request. Replaced it with raw read()+line splitting; conformance now passes including a 3-request pipelined batch and a shutdown that exits 0 with no extra stdout. Also migrated the remaining harnesses (edge cases, checkpoint fault injection, large recovery, graceful shutdown, fuzz) to JSONL."
     }
   ],
   "experiments": [
@@ -202,6 +216,27 @@
       "command": "python3 tests/fuzz.py (3000 random statements, 2s timeout each)",
       "output": "HANG at 66: '--'  -> after the fix: fuzz ok: 3000 statements",
       "note": "a bare '--' line (driver directive or SQL comment forwarded as a statement) produced no output at all, which is exactly the 'JSON response timeout' failure the platform reported; directives now get '{}' and the reader tolerates a missing trailing newline"
+    },
+    {
+      "id": "e11",
+      "what": "JSONL protocol conformance (handshake, id type echo, error shape, pipelined batch, shutdown)",
+      "command": "python3 tests/protocol_check.py",
+      "output": "FAILS: 0; pipelined batch of 3 requests answered in order; shutdown response {\"id\":10,\"ok\":true} then exit 0 with empty stdout tail",
+      "note": "the pipelined-batch case deadlocked before the reader fix (only 1 of 3 responses)"
+    },
+    {
+      "id": "e12",
+      "what": "restricted container run per the protocol reference",
+      "command": "docker run --rm -i --network=none --cpus=2 --memory=2g --read-only --cap-drop=ALL --mount type=bind,src=<data>,dst=/data mvdb",
+      "output": "{\"type\":\"ready\"} / {\"id\":1,\"ok\":true} / {\"id\":2,\"ok\":true,\"affected_rows\":1} / {\"id\":3,\"ok\":true,\"columns\":[\"id\",\"content\"],\"rows\":[[1,\"你好\"]]} / {\"id\":4,\"ok\":true}",
+      "note": "also re-run through tests/protocol_check.py with MVDB_BIN pointing at the docker wrapper: FAILS: 0"
+    },
+    {
+      "id": "e13",
+      "what": "full local suite after the protocol and harness migration",
+      "command": "protocol_check, run_cases, crash_matrix, spill_test, edge_cases, checkpoint_crash, fuzz",
+      "output": "protocol FAILS 0; public 20/20; crash 5/5; spill 5/5; edge FAILS 0; checkpoint FAILS 0; fuzz 1500 statements ok",
+      "note": ""
     }
   ],
   "student_evidence": [
@@ -293,15 +328,15 @@
     {
       "id": "q1",
       "question": "A segment append is torn by kill -9. How does scanSegment decide the record is incomplete, and why cannot a committed row be lost by truncating it?",
-      "status": "answered",
-      "note": "The agent drafted an explanation (see /agent_explanations). It is not counted as student evidence until the student restates it in their own words.",
+      "status": "resolved",
+      "note": "Answered by the student and recorded as student evidence; the agent draft is kept in /agent_explanations.",
       "resolved_by": "/conversations/15/content"
     },
     {
       "id": "q2",
       "question": "Checkpoint does compact -> rename -> truncate WAL. What happens if kill lands before/after the rename, and why can the order not be reversed?",
-      "status": "answered",
-      "note": "The agent drafted an explanation (see /agent_explanations). It is not counted as student evidence until the student restates it in their own words.",
+      "status": "resolved",
+      "note": "Answered by the student and recorded as student evidence; the agent draft is kept in /agent_explanations.",
       "resolved_by": "/conversations/16/content"
     }
   ],
@@ -309,8 +344,8 @@
     "notes": "The student drove constraint discovery (language, submission route) and restated the three core semantics before code existed. The ARIES-style answer for the torn-COMMIT case was correct in isolation but assumed steal/no-force page flushing, which this implementation does not use; that gap is the most valuable recorded discussion because it ties theory to the concrete design."
   },
   "limitations": [
-    "The standard JSONL handshake/execute/shutdown protocol is implemented from the published round2 protocol reference; the hidden formal driver and hidden inputs remain unavailable for local verification.",
-    "ANN mode currently uses the exact scan, so recall is correct but there is no approximate-search speedup.",
+    "The hidden formal driver and hidden inputs remain unavailable; the protocol is implemented from the round-2 protocol reference (STDIO_PROTOCOL.md in this repo) and verified locally, including pipelined input.",
+    "ANN mode uses the exact scan, so recall is correct but there is no approximate-search speedup.",
     "The primary-key index (pk -> segment offset) stays in memory; a table whose index alone exceeds the memory budget is not handled."
   ],
   "agent_explanations": [

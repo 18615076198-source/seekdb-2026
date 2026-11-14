@@ -2,9 +2,11 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <poll.h>
 #include <string>
+#include <unistd.h>
 
 static volatile sig_atomic_t g_stop = 0;
 static void onTerm(int) { g_stop = 1; }
@@ -28,31 +30,19 @@ int main(int argc, char **argv) {
   std::signal(SIGINT, onTerm);
 
   JsonLineProtocol proto;
-  // The judge waits for this before sending the first request.
+  // Recovery is finished before the judge is told we are ready.
   proto.ready();
 
-  std::string line;
-  while (!g_stop) {
-    // Use a timed poll so SIGTERM can wake the loop even when stdin is idle.
-    // std::getline alone may remain blocked until the next byte arrives.
-    struct pollfd pfd { 0, POLLIN, 0 };
-    int pr = ::poll(&pfd, 1, 100);
-    if (pr == 0) continue;
-    if (pr < 0) {
-      if (errno == EINTR) continue;
-      break;
-    }
-    if (!(pfd.revents & (POLLIN | POLLHUP))) continue;
-    if (!std::getline(std::cin, line)) break;
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty()) continue;
-
+  // Raw read() + line splitting instead of poll()+getline(): iostream may read
+  // ahead into its own buffer, so a later poll() on the fd blocks even though a
+  // complete request is already buffered (deadlock on pipelined input).
+  auto handle = [&](const std::string &line) -> int {
+    if (line.empty()) return -1;
     JsonRequest req;
     if (!parseJsonRequest(line, req)) {
       proto.protocolError("request must be a JSON object with id and op");
-      continue;
+      return -1;
     }
-
     if (req.op == "shutdown") {
       try {
         eng.shutdown();
@@ -65,12 +55,10 @@ int main(int argc, char **argv) {
         return 1;
       }
     }
-
     if (req.op != "execute" || req.sql.empty()) {
       proto.error(req.id, "unsupported_op", "op must be execute or shutdown");
-      continue;
+      return -1;
     }
-
     try {
       Parser p(req.sql);
       Statement st = p.parse();
@@ -81,6 +69,39 @@ int main(int argc, char **argv) {
     } catch (const std::exception &e) {
       proto.error(req.id, "internal_error", e.what());
     }
+    return -1;
+  };
+
+  std::string buf;
+  bool eof = false;
+  while (!g_stop && !eof) {
+    size_t nl;
+    while ((nl = buf.find('\n')) != std::string::npos) {
+      std::string line = buf.substr(0, nl);
+      buf.erase(0, nl + 1);
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      int rc = handle(line);
+      if (rc >= 0) return rc;
+    }
+    struct pollfd pfd { 0, POLLIN, 0 };
+    int pr = ::poll(&pfd, 1, 100);
+    if (pr == 0) continue;
+    if (pr < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    char chunk[65536];
+    ssize_t n = ::read(0, chunk, sizeof chunk);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    if (n == 0) { eof = true; break; }
+    buf.append(chunk, (size_t)n);
+  }
+  if (!buf.empty()) {
+    int rc = handle(buf);
+    if (rc >= 0) return rc;
   }
 
   // EOF and signal shutdowns roll back an open transaction and checkpoint

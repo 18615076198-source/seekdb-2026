@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Fuzz the server: it must never stop answering, whatever the statement is."""
-import json, os, random, shutil, signal, subprocess, sys
+"""Fuzz the JSONL server: every request must get exactly one valid response."""
+import json, os, random, shutil, signal, sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-BIN = os.environ.get("MVDB_BIN", os.path.abspath(os.path.join(HERE, "..", "build", "mvdb")))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from jsonl_client import Client
+
 DIR = "/tmp/fuzzdb"
 random.seed(int(os.environ.get("SEED", "1")))
 N = int(os.environ.get("N", "3000"))
 
 
-def start():
-    env = dict(os.environ, MVDB_DATA_DIR=DIR)
-    return subprocess.Popen([BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+class Timeout(Exception):
+    pass
 
+
+def _alarm(signum, frame):
+    raise Timeout()
+
+
+signal.signal(signal.SIGALRM, _alarm)
 
 ATOMS = ["0", "1", "-1", "9223372036854775807", "-9223372036854775808", "99999999999999999999",
          "'a'", "'中文'", "'[1,2]'", "'[nan,1]'", "'[1e999,1]'", "''", "NULL", "1.5", "t", "v", "id"]
@@ -49,39 +54,30 @@ def gen():
             random.choice(["t2", "t3", ""]), random.choice(["id", "k"]), random.choice(["2", "0", "9999", "-1"]))
     if kind < 0.8:
         return " ".join(random.choice(TOKENS) for _ in range(random.randint(1, 8)))
-    # random byte soup
     return "".join(random.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '(),;[]-*_")
                    for _ in range(random.randint(1, 60)))
 
 
 def main():
-    shutil.rmtree(DIR, ignore_errors=True); os.makedirs(DIR, exist_ok=True)
-    p = start()
-    create = "CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(16), e VECTOR(2));"
-    p.stdin.write(create + "\n"); p.stdin.flush(); p.stdout.readline()
-    import signal as _sig
-    def _alarm(signum, frame):
-        raise TimeoutError()
-    _sig.signal(_sig.SIGALRM, _alarm)
+    shutil.rmtree(DIR, ignore_errors=True)
+    os.makedirs(DIR, exist_ok=True)
+    c = Client(DIR)
+    c.execute("CREATE TABLE t (id BIGINT PRIMARY KEY, v VARCHAR(16), e VECTOR(2));")
     for i in range(N):
         sql = gen()
         try:
-            _sig.setitimer(_sig.ITIMER_REAL, 2.0)
-            p.stdin.write(sql + "\n"); p.stdin.flush()
-            line = p.stdout.readline()
-            _sig.setitimer(_sig.ITIMER_REAL, 0)
-        except TimeoutError:
-            print("HANG at %d: %r" % (i, sql)); p.kill(); return 1
-        except Exception as e:
-            print("WRITE FAIL at %d: %r %s" % (i, sql, e)); return 1
-        if not line:
-            print("NO RESPONSE at %d: %r rc=%s stderr=%s" % (i, sql, p.poll(), p.stderr.read()[-300:]))
+            signal.setitimer(signal.ITIMER_REAL, 2.0)
+            c.execute(sql)
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        except Timeout:
+            print("HANG at %d: %r" % (i, sql))
+            c.p.kill()
             return 1
-        try:
-            json.loads(line)
-        except Exception:
-            print("BAD JSON at %d: %r -> %r" % (i, sql, line[:120])); return 1
-    p.stdin.close(); p.wait(timeout=60)
+        except Exception as e:
+            print("FAIL at %d: %r %s" % (i, sql, e))
+            c.p.kill()
+            return 1
+    c.shutdown()
     print("fuzz ok: %d statements" % N)
     return 0
 
