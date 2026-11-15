@@ -373,5 +373,7 @@
       "answer": "顺序是 compact 写 tmp → fdatasync(tmp) → rename(tmp, seg) → fsync(dir) → 写 snapshot → ftruncate(WAL)。kill 在 rename 之前：旧段完好，tmp 是垃圾（下次覆盖），WAL 未截断，重启用旧段 + 回放 WAL，状态一致。kill 在 rename 之后、截断之前：新段已完整持久（fsync 在 rename 前），快照可能仍是旧的，WAL 是超集；回放 WAL，redo 是整行 after-image、幂等，重复应用结果不变。kill 在快照 rename 之后、截断之前同理。不能反过来：WAL 是 checkpoint 之前唯一的权威副本，先截断再 compact，一旦 compact 中途崩溃，已提交的行既不在段里也不在 WAL 里，直接丢数据；顺序必须是“新的持久状态完整可见之后，才能丢弃旧的日志”。用 rename 而不是原地覆写，是为了避免半新半旧的段文件被当成有效状态。",
       "status": "drafted by the agent at the student's request on 2026-11-10; NOT student evidence"
     }
-  ]
+  ],
+  "summary": "真实开发学习材料：记录学生围绕 MiniVectorDB 的约束拆解、事务可见性、精确过滤 TopK、WAL/快照恢复、spill 内存约束和故障注入开展的提问、解释、实验结果与复盘。文件包含 17 条对话、10 个实验和 9 条可定位的学生证据；Agent 自动解释已单独标注，不作为学生证据。",
+  "material_summary": "本材料来自 2026-11-09 至 2026-11-10 的真实开发过程，覆盖问题理解、技术迁移、独立验证、实验迭代和方案权衡；实验结果保留在 experiments 字段，学生贡献通过 student_evidence 的 JSON Pointer 引用。"
 }
