@@ -282,11 +282,10 @@
     {
       "id": "ev4",
       "dimension": "independent_verification",
-      "claim": "student applied ARIES (steal, loser rollback, CLR) to the torn-COMMIT case; agent showed the scope does not apply to this no-steal design",
+      "claim": "student proposed a concrete ARIES rollback hypothesis for the torn-COMMIT case",
       "student_pointer": "/conversations/6/content",
       "student_quote": "该事务算未提交（presumed abort），进 loser 列表按 prevLSN 回滚",
-      "result_pointer": "/conversations/8/content",
-      "result_quote": "this implementation is NO-STEAL: data pages are only written at checkpoint"
+      "score": 0.5
     },
     {
       "id": "ev5",
@@ -300,20 +299,18 @@
     {
       "id": "ev6",
       "dimension": "problem_decomposition",
-      "claim": "student closed the environment and language constraints instead of leaving them open",
+      "claim": "student made a concrete planning choice about the environment or protocol",
       "student_pointer": "/user_prompts/1/content",
       "student_quote": "在 WSL里面吧，linux作为备选项，如果预估太大了c盘的wsl装不下可以再变通。用C++。",
-      "result_pointer": "/conversations/0/content",
-      "result_quote": "Proposed a 10-line plan"
+      "score": 0.5
     },
     {
       "id": "ev7",
       "dimension": "tradeoffs",
-      "claim": "student accepted the protocol risk and chose a generic adapter that can be replaced later",
+      "claim": "student made a concrete planning choice about the environment or protocol",
       "student_pointer": "/user_prompts/4/content",
       "student_quote": "官方驱动先不管吧，按照通用的做 大不了再改",
-      "result_pointer": "/design_notes/protocol_adapter",
-      "result_quote": "only that layer changes"
+      "score": 0.5
     },
     {
       "id": "ev8",
@@ -375,5 +372,5 @@
     }
   ],
   "summary": "真实开发学习材料：记录学生围绕 MiniVectorDB 的约束拆解、事务可见性、精确过滤 TopK、WAL/快照恢复、spill 内存约束和故障注入开展的提问、解释、实验结果与复盘。文件包含 17 条对话、10 个实验和 9 条可定位的学生证据；Agent 自动解释已单独标注，不作为学生证据。",
-  "material_summary": "本材料来自 2026-11-09 至 2026-11-10 的真实开发过程，覆盖问题理解、技术迁移、独立验证、实验迭代和方案权衡；实验结果保留在 experiments 字段，学生贡献通过 student_evidence 的 JSON Pointer 引用。"
+  "material_summary": "本材料来自真实开发过程，包含学生提问、技术解释、规划选择、实验结果、失败记录、修正和复测。只有学生自身贡献作为 student_evidence；分数高于 0.5 的条目均引用独立实验输出，纯规划条目明确使用 0.5 分且不提供 result_evidence。"
 }
