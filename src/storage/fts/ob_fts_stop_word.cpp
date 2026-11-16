@@ -18,6 +18,7 @@
 #define USING_LOG_PREFIX STORAGE_FTS
 
 #include "share/rc/ob_server_runtime.h"
+#include "lib/charset/ob_ctype.h"
 #include "storage/fts/ob_fts_stop_word.h"
 #include "storage/fts/ob_fts_parser_helper.h"
 #include "storage/fts/ob_fts_parser_property.h"
@@ -104,7 +105,6 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
   } else {
     common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
     if (OB_FAIL(common::ObCharset::charset_convert(
                                        allocator,
                                        word.get_word().get_string(),
@@ -122,7 +122,6 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
         ret = OB_SUCCESS;
       } else if (OB_SUCC(ret)) {
         ret = OB_ERR_UNEXPECTED;
-      } else {
       }
     }
   }
@@ -236,19 +235,39 @@ int ObAddWordT<MapType>::casedown_word(const ObFTWord &src, ObFTWord &dst)
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (flag_.casedown()) {
-    ObString dst_str;
-    if (OB_FAIL(ObCharset::tolower(
-                    word_meta_.get_collation_type(),
-                    src.get_word().get_string(),
-                    dst_str,
-                    allocator_))) {
-    } else {
-      ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
-      dst = tmp;
-    }
-  } else {
+  } else if (!flag_.casedown()) {
     dst = src;
+  } else {
+    const common::ObString src_str = src.get_word().get_string();
+    // Fold a stack copy first: most tokens do not change at all, and keeping the
+    // source word in that case avoids an allocator round trip per token.
+    const ObCharsetInfo *cs = ObCharset::get_charset(word_meta_.get_collation_type());
+    char buf[256];
+    if (OB_NOT_NULL(cs) && 1 == cs->casedn_multiply && src_str.length() <= static_cast<int64_t>(sizeof(buf))) {
+      MEMCPY(buf, src_str.ptr(), src_str.length());
+      const size_t folded_len = cs->cset->casedn(cs, buf, src_str.length(), buf, src_str.length());
+      if (static_cast<int64_t>(folded_len) == src_str.length()
+          && 0 == MEMCMP(buf, src_str.ptr(), src_str.length())) {
+        dst = src;
+      } else {
+        common::ObString dst_str;
+        if (OB_FAIL(ob_write_string(allocator_, common::ObString(static_cast<int32_t>(folded_len), buf), dst_str))) {
+        } else {
+          ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+          dst = tmp;
+        }
+      }
+    } else {
+      common::ObString dst_str;
+      if (OB_FAIL(ObCharset::tolower(word_meta_.get_collation_type(),
+                                      src_str,
+                                      dst_str,
+                                      allocator_))) {
+      } else {
+        ObFTWord tmp(dst_str.length(), dst_str.ptr(), word_meta_);
+        dst = tmp;
+      }
+    }
   }
   return ret;
 }
