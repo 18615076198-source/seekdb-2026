@@ -20,7 +20,9 @@
 
 #include "storage/fts/ob_fts_parser_helper.h"
 
+#include "common/json_type/ob_json_bin.h"
 #include "common/json_type/ob_json_tree.h"
+#include "lib/utility/serialization.h"
 #include "share/ob_force_print_log.h"
 #include "storage/fts/dict/ob_ft_dict_hub.h"
 #include "storage/fts/ob_beng_ft_parser.h"
@@ -255,7 +257,8 @@ int ObFTParseData::get_dict_hub(ObFTDictHub *&hub)
 
 ////////////////////////////////////////////////////////////////////////////////
 // ObFTParseHelper
-int ObFTParseHelper::segment(
+template <class MapType>
+int ObFTParseHelper::segment_tokens(
     const ObFTParserProperty &property,
     const int64_t parser_version,
     const ObIFTParserDesc *parser_desc,
@@ -263,7 +266,7 @@ int ObFTParseHelper::segment(
     const char *ft,
     const int64_t ft_len,
     common::ObIAllocator &allocator,
-    ObAddWord &add_word)
+    ObAddWordT<MapType> &add_word)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(parser_version < 0 || nullptr == parser_desc || nullptr == cs || nullptr == ft || 0 >= ft_len)) {
@@ -358,12 +361,13 @@ void ObFTParseHelper::reset()
   is_inited_ = false;
 }
 
-int ObFTParseHelper::segment(
-    const ObObjMeta &meta,
+template <class MapType>
+int ObFTParseHelper::segment_dispatch(
+    const common::ObObjMeta &meta,
     const char *fulltext,
     const int64_t fulltext_len,
     int64_t &doc_length,
-    ObFTWordMap &words) const
+    MapType &words) const
 {
   int ret = OB_SUCCESS;
   const ObCharsetInfo *cs = nullptr;
@@ -377,9 +381,17 @@ int ObFTParseHelper::segment(
   } else if (OB_ISNULL(cs = common::ObCharset::get_charset(type))) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    words.reuse();
-    ObAddWord add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
-    if (OB_FAIL(segment(
+    // Clear the map only when it can hold data from a previous segment()
+    // call. Every current caller creates the map right before segment(), so
+    // the per-bucket walk below is pure overhead on the tokenize hot path (up
+    // to 997 buckets per call); an empty map is already in the cleared state
+    // (all bucket heads NULL, size 0), so skipping reuse() here is
+    // observationally identical for every caller.
+    if (OB_UNLIKELY(0 != words.size())) {
+      words.reuse();
+    }
+    ObAddWordT<MapType> add_word(parser_property_, meta, add_word_flag_, *allocator_, words);
+    if (OB_FAIL(segment_tokens(
                     parser_property_,
                     parser_name_.get_parser_version(),
                     parser_desc_,
@@ -395,6 +407,26 @@ int ObFTParseHelper::segment(
   LOG_DEBUG("ft parse segment", K(ret), K(type), K(add_word_flag_), K(parser_name_),
       K(ObString(fulltext_len, fulltext)), K(words.size()));
   return ret;
+}
+
+int ObFTParseHelper::segment(
+    const ObObjMeta &meta,
+    const char *fulltext,
+    const int64_t fulltext_len,
+    int64_t &doc_length,
+    ObFTWordMap &words) const
+{
+  return segment_dispatch(meta, fulltext, fulltext_len, doc_length, words);
+}
+
+int ObFTParseHelper::segment(
+    const ObObjMeta &meta,
+    const char *fulltext,
+    const int64_t fulltext_len,
+    int64_t &doc_length,
+    ObFTWordMapLocked &words) const
+{
+  return segment_dispatch(meta, fulltext, fulltext_len, doc_length, words);
 }
 
 int ObFTParseHelper::check_is_the_same(
@@ -480,28 +512,104 @@ int ObFTParseHelper::make_token_array_json(
     common::ObIJsonBase *&json_root)
 {
   int ret = OB_SUCCESS;
-  ObJsonArray *token_array = nullptr;
-  if (OB_UNLIKELY(OB_ISNULL(token_array = OB_NEWx(ObJsonArray, allocator_, allocator_)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
+  json_root = nullptr;
+  const uint64_t element_count = static_cast<uint64_t>(words.size());
+
+  // Write the binary JSON array straight from the word map instead of building
+  // one ObJsonString per token, appending it to an ObJsonArray and letting
+  // ObJsonBaseFactory::transform walk the resulting tree again to serialize it.
+  //
+  // Every element is a JSON string, encoded as [vertype][vi64 length][bytes],
+  // and the elements are emitted in the very same map iteration order the tree
+  // path used, so the decoded JSON text stays byte-identical. The document
+  // header is emitted as well so the value is a canonical binary document and
+  // its byte length matches the tree path.
+  uint64_t node_total_size = 0;
+  for (ObFTWordMap::const_iterator it = words.begin(); it != words.end(); ++it) {
+    const ObString token = it->first.get_word().get_string();
+    node_total_size += static_cast<uint64_t>(sizeof(uint8_t))
+                     + static_cast<uint64_t>(serialization::encoded_length_vi64(token.length()))
+                     + static_cast<uint64_t>(token.length());
+  }
+
+  const uint8_t count_var_type = ObJsonVar::get_var_type(element_count);
+  const uint64_t count_size = ObJsonVar::get_var_size(count_var_type);
+  // The array header stores obj_size with a width derived from obj_size itself,
+  // and the value entry array reuses that width for every offset, so iterate
+  // until the size agrees with the var types it implies.
+  uint64_t obj_size = OB_JSON_BIN_OBJ_HEADER_LEN + count_size + sizeof(uint32_t)
+      + element_count * (sizeof(uint32_t) + OB_JSON_BIN_VALUE_TYPE_LEN) + node_total_size;
+  for (int64_t i = 0; i < 4; ++i) {
+    const uint64_t obj_size_var_size =
+        ObJsonVar::get_var_size(ObJsonVar::get_var_type(obj_size));
+    const uint64_t total_size = OB_JSON_BIN_OBJ_HEADER_LEN + count_size + obj_size_var_size
+        + element_count * (obj_size_var_size + OB_JSON_BIN_VALUE_TYPE_LEN) + node_total_size;
+    if (total_size == obj_size) {
+      break;
+    }
+    obj_size = total_size;
+  }
+
+  ObJsonBinMeta meta;
+  meta.set_type(ObJsonBin::get_array_vertype(), false);
+  meta.set_element_count(element_count);
+  meta.set_element_count_var_type(count_var_type);
+  meta.set_obj_size(obj_size);
+  meta.set_obj_size_var_type(ObJsonVar::get_var_type(obj_size));
+  meta.set_entry_var_type(meta.obj_size_var_type());
+  meta.set_is_continuous(true);
+  meta.calc_entry_array();
+
+  // The tree path produced a root container whose binary starts with the
+  // 8 byte JSON document header: ObJsonBinSerializer::serialize() calls
+  // add_doc_header_v0() before the node and records the total document length
+  // in it. A bin without that header is not a canonical document --
+  // should_pack_diff() sees a zero extend segment and reports
+  // OB_ERR_UNEXPECTED, and consumers such as JSON_STORAGE_SIZE() observe a
+  // value that is 8 bytes shorter than the tree path. Emit the same header and
+  // keep every node offset relative to the array node start, i.e. subtract the
+  // header length when computing value offsets.
+  ObJsonBuffer buffer(allocator_);
+  const int64_t start_pos = sizeof(ObJsonBinDocHeader);
+  if (OB_FAIL(ObJsonBin::add_doc_header_v0(buffer))) {
+  } else if (OB_FAIL(buffer.reserve(obj_size))) {
+  } else if (OB_FAIL(meta.to_header(buffer))) {
   } else {
-    for (ObFTWordMap::const_iterator it = words.begin(); OB_SUCC(ret) && it != words.end(); ++it) {
-      ObString key = it->first.get_word().get_string();
-      ObJsonString *token = nullptr;
-      if (OB_UNLIKELY(OB_ISNULL(token = OB_NEWx(ObJsonString, allocator_, key)))) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
+    char *buf_ptr = buffer.ptr() + start_pos;
+    uint64_t index = 0;
+    for (ObFTWordMap::const_iterator it = words.begin();
+         OB_SUCC(ret) && it != words.end(); ++it, ++index) {
+      const ObString token = it->first.get_word().get_string();
+      const uint64_t value_offset = buffer.length() - start_pos;
+      if (OB_FAIL(ObJsonBinSerializer::set_value_entry(
+              meta, buf_ptr, static_cast<int>(index), value_offset,
+              static_cast<uint8_t>(ObJsonBin::get_string_vertype()), false))) {
+      } else if (OB_FAIL(ObJsonBinSerializer::serialize_json_string(
+                     ObJsonBin::get_string_vertype(), token, buffer))) {
       } else {
-        if (OB_FAIL(token_array->append(token))) {
-          OB_DELETEx(ObJsonString, allocator_, token);
-        } else {
-        }
+        // append may reallocate the buffer, refresh the entry writer
+        buf_ptr = buffer.ptr() + start_pos;
       }
-    } // for
+    }
   }
+
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ObJsonBin::set_doc_header_v0(buffer, buffer.length(), false))) {
+  }
+
   if (OB_SUCC(ret)) {
-    json_root = token_array;
-  } else {
-    OB_DELETEx(ObJsonArray, allocator_, token_array);
+    ObJsonBin *json_bin = nullptr;
+    if (OB_UNLIKELY(OB_ISNULL(json_bin =
+            OB_NEWx(ObJsonBin, allocator_, buffer.ptr(),
+                    static_cast<int64_t>(buffer.length()), allocator_)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else if (OB_FAIL(json_bin->reset_iter())) {
+      OB_DELETEx(ObJsonBin, allocator_, json_bin);
+    } else {
+      json_root = json_bin;
+    }
   }
+
   return ret;
 }
 
@@ -512,6 +620,38 @@ int ObFTParseHelper::set_add_word_flag(const ObIFTParserDesc &ftparser_desc)
   }
   return ret;
 }
+
+template int ObFTParseHelper::segment_dispatch<ObFTWordMap>(
+    const common::ObObjMeta &meta,
+    const char *fulltext,
+    const int64_t fulltext_len,
+    int64_t &doc_length,
+    ObFTWordMap &words) const;
+template int ObFTParseHelper::segment_dispatch<ObFTWordMapLocked>(
+    const common::ObObjMeta &meta,
+    const char *fulltext,
+    const int64_t fulltext_len,
+    int64_t &doc_length,
+    ObFTWordMapLocked &words) const;
+
+template int ObFTParseHelper::segment_tokens<ObFTWordMap>(
+    const ObFTParserProperty &property,
+    const int64_t parser_version,
+    const ObIFTParserDesc *parser_desc,
+    const ObCharsetInfo *cs,
+    const char *ft,
+    const int64_t ft_len,
+    common::ObIAllocator &allocator,
+    ObAddWordT<ObFTWordMap> &add_word);
+template int ObFTParseHelper::segment_tokens<ObFTWordMapLocked>(
+    const ObFTParserProperty &property,
+    const int64_t parser_version,
+    const ObIFTParserDesc *parser_desc,
+    const ObCharsetInfo *cs,
+    const char *ft,
+    const int64_t ft_len,
+    common::ObIAllocator &allocator,
+    ObAddWordT<ObFTWordMapLocked> &add_word);
 
 } // end namespace storage
 } // end namespace oceanbase
