@@ -1,9 +1,8 @@
 {
-  "schema": "agent-learning-evidence-v3-unbounded",
   "project": "MiniVectorDB (OceanBase 2026 competition, round2)",
   "language": "zh-CN",
   "synthetic": false,
-  "material_scope": "Assembled from the real working session 2026-11-09..14. Student messages are verbatim. Agent turns are compressed summaries of what was actually said. The JSONL protocol implementation and STDIO_PROTOCOL.md come from the teammate's commits on the same branch and are labelled speaker=teammate. Commands and outputs are copied from real runs; anything not executed is marked as planned or unanswered.",
+  "material_scope": "本文件整理原材料标注的 2026-11-09 至 2026-11-14 开发记录，包含用户提示、对话、历史实验结果及 Agent 草稿。它不是完整逐字会话导出：Agent 发言为压缩摘要；s9、s10 已注明由学生基于 Agent 草稿编辑；其他学生发言沿用原材料文本。本次整理不新增学生发言、不新增实验结果，也不把历史测试视为当前提交的重新执行结果。",
   "problem_statement_summary": "Implement a single-node vector database: SQL subset (CREATE/INSERT/SELECT/UPDATE/DELETE, comparisons, AND, ORDER BY, LIMIT, L2_DISTANCE, filtered TopK), /data persistence, BEGIN/COMMIT/ROLLBACK, crash recovery; MySQL cases must all pass before performance and agent-prompt scoring.",
   "user_prompts": [
     {
@@ -251,88 +250,6 @@
       "note": "the repeated single-case timeout motivated a transport review; the process had been answering SQL lines without the {\"type\":\"ready\"} handshake the judge waits for"
     }
   ],
-  "student_evidence": [
-    {
-      "id": "ev1",
-      "dimension": "technical_understanding",
-      "claim": "filtered TopK must be computed inside the filtered set; ties break by primary key",
-      "student_pointer": "/conversations/1/content",
-      "student_quote": "执行顺序必须是 WHERE，候选集S，只在 S 上算 L2 ，排序 ， LIMIT",
-      "result_pointer": "/experiments/0/output",
-      "result_quote": "SUMMARY PASS=20 FAIL=0 MISSING=0"
-    },
-    {
-      "id": "ev2",
-      "dimension": "technical_understanding",
-      "claim": "read-your-writes, statement-level savepoint, whole-transaction rollback",
-      "student_pointer": "/conversations/2/content",
-      "student_quote": "语句失败只撤销这条语句的写（语句级 savepoint），但是事务还是继续",
-      "result_pointer": "/experiments/1/output",
-      "result_quote": "PASS=20 FAIL=0 MISSING=0"
-    },
-    {
-      "id": "ev3",
-      "dimension": "technical_understanding",
-      "claim": "durability boundary is the COMMIT acknowledgement; torn tail is truncated",
-      "student_pointer": "/conversations/3/content",
-      "student_quote": "承诺的边界是 COMMIT 返回成功的那一刻",
-      "result_pointer": "/experiments/2/output",
-      "result_quote": "case_autocommit_survives: PASS"
-    },
-    {
-      "id": "ev4",
-      "dimension": "independent_verification",
-      "claim": "student proposed a concrete ARIES rollback hypothesis for the torn-COMMIT case",
-      "student_pointer": "/conversations/6/content",
-      "student_quote": "该事务算未提交（presumed abort），进 loser 列表按 prevLSN 回滚",
-      "score": 0.5
-    },
-    {
-      "id": "ev5",
-      "dimension": "independent_verification",
-      "claim": "student argued idempotent redo is required by at-least-once replay; the recovery re-entrancy test checks that consequence",
-      "student_pointer": "/conversations/7/content",
-      "student_quote": "幂等 redo 为什么能兜住",
-      "result_pointer": "/experiments/2/output",
-      "result_quote": "case_recovery_reentrant: PASS"
-    },
-    {
-      "id": "ev6",
-      "dimension": "problem_decomposition",
-      "claim": "student made a concrete planning choice about the environment or protocol",
-      "student_pointer": "/user_prompts/1/content",
-      "student_quote": "在 WSL里面吧，linux作为备选项，如果预估太大了c盘的wsl装不下可以再变通。用C++。",
-      "score": 0.5
-    },
-    {
-      "id": "ev7",
-      "dimension": "tradeoffs",
-      "claim": "student made a concrete planning choice about the environment or protocol",
-      "student_pointer": "/user_prompts/4/content",
-      "student_quote": "官方驱动先不管吧，按照通用的做 大不了再改",
-      "score": 0.5
-    },
-    {
-      "id": "ev8",
-      "dimension": "experiment_feedback",
-      "claim": "student explained the torn-segment recovery hypothesis, then the fault-injection result confirmed the repair path",
-      "student_pointer": "/conversations/15/content",
-      "student_quote": "如果发生撕裂，说明进程是在 WAL 落盘后、段写完前被杀",
-      "result_pointer": "/experiments/8/output",
-      "result_quote": "torn segment tail: [[1],[2]] recovered",
-      "comment": "student restatement (edited from an agent draft) then confirmed by a fault-injection test that truncates the last segment record"
-    },
-    {
-      "id": "ev9",
-      "dimension": "technical_understanding",
-      "claim": "checkpoint order (durable new state before discarding the WAL) is what makes both crash windows safe",
-      "student_pointer": "/conversations/16/content",
-      "student_quote": "如果反过来先截断 WAL 再做 compact 是不行",
-      "result_pointer": "/experiments/8/output",
-      "result_quote": "crash before WAL truncate: no duplication",
-      "comment": "student restatement (edited from an agent draft) then confirmed by crashing between snapshot rename and WAL truncation"
-    }
-  ],
   "pending_questions": [
     {
       "id": "q1",
@@ -371,6 +288,15 @@
       "status": "drafted by the agent at the student's request on 2026-11-10; NOT student evidence"
     }
   ],
-  "summary": "真实开发学习材料：记录学生围绕 MiniVectorDB 的约束拆解、事务可见性、精确过滤 TopK、WAL/快照恢复、spill 内存约束和故障注入开展的提问、解释、实验结果与复盘。文件包含 17 条对话、10 个实验和 9 条可定位的学生证据；Agent 自动解释已单独标注，不作为学生证据。",
-  "material_summary": "本材料来自真实开发过程，包含学生提问、技术解释、规划选择、实验结果、失败记录、修正和复测。只有学生自身贡献作为 student_evidence；分数高于 0.5 的条目均引用独立实验输出，纯规划条目明确使用 0.5 分且不提供 result_evidence。"
+  "summary": "MiniVectorDB 开发学习记录：9 条用户提示、20 条对话、14 条历史实验记录及 2 条 Agent 草稿。内容涉及过滤 TopK、事务可见性、WAL 恢复、冷段存储和 JSONL 协议；保留失败记录、修正描述及已知局限。来源和证据边界见 material_scope、curation_notes 及各记录的 speaker/note。",
+  "material_summary": "MiniVectorDB 开发学习记录：9 条用户提示、20 条对话、14 条历史实验记录及 2 条 Agent 草稿。内容涉及过滤 TopK、事务可见性、WAL 恢复、冷段存储和 JSONL 协议；保留失败记录、修正描述及已知局限。来源和证据边界见 material_scope、curation_notes 及各记录的 speaker/note。",
+  "rule_version": "agent-learning-evidence-v3-unbounded",
+  "curation_notes": [
+    "本次整理删除了后加的 student_evidence 自评索引及其 score；原始 user_prompts、conversations、experiments、agent_explanations 内容保持不变。索引中的配对和维度归类不是新增的学生贡献。",
+    "实验记录保留实际输出摘要及已有命令，但没有逐项记录操作者和学生如何参与。测试通过本身不证明学生独立设计、执行或解释了测试。",
+    "s4 的 ARIES 回滚假设与当前实现的 NO-STEAL 前提不一致；a4 是 Agent 的纠正。记录中没有紧随 a4 的学生修正解释。",
+    "s9、s10 来源于 Agent 草稿后的学生编辑，不能视为完全独立于 Agent 的原创解释；原草稿仍在 agent_explanations 中供对照。",
+    "e1 至 e10 保留早期接口和版本的历史结果；e11 至 e13 记录后续 JSONL 协议检查；e14 是更早提交的失败反馈。这些结果不表示在本次材料修订后重新执行了测试。",
+    "本文件未补造缺失的完整会话、操作者信息、时间戳或复测记录。现有记录能够支持到何种程度，应与其已注明的来源和局限一同判断。"
+  ]
 }
