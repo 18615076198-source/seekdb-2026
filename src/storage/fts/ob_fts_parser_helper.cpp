@@ -390,12 +390,10 @@ int ObFTParseHelper::segment(
     ObFTTokenCache *token_cache = ObFTTokenCache::get_instance();
     ObFTTokenCacheKey token_key;
     bool cache_hit = false;
-    // beng/space/ngram indexes tokenize each document once, so the shared
-    // cache only adds a hash, a bucket lock and an entry store per column.
-    // IK keeps it: its auxiliary builds tokenize the same content column more
-    // than once, and that second pass is what the cache saves.
-    const bool use_token_cache = OB_NOT_NULL(token_cache)
-        && 0 != STRCMP(parser_name_.get_parser_name().str(), "beng");
+    // Cache eligibility depends on the complete input key, not the parser
+    // name: BENG inputs can also recur across index builds or statements.
+    // The cache bounds payload size and falls back to parsing on misses.
+    const bool use_token_cache = OB_NOT_NULL(token_cache);
     if (use_token_cache && fulltext_len > 0) {
       const int64_t parser_version = parser_name_.get_parser_version();
       uint64_t parser_hash = 0;
