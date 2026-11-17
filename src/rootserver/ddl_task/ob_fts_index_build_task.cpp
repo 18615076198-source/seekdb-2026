@@ -368,22 +368,25 @@ int ObFtsIndexBuildTask::get_next_status(share::ObDDLTaskStatus &next_status)
         break;
       }
       case ObDDLTaskStatus::GENERATE_ROWKEY_DOC_SCHEMA: {
-        next_status = ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT;
-        break;
-      }
-      case ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT: {
+        // Dictionary loading only needs the base-table schema. Overlap it with
+        // the rowkey-doc build, but keep the completion barrier before any
+        // auxiliary build that reads the generated document IDs.
         bool need_to_load_dic = false;
         const ObString &parser_name = create_index_arg_.index_option_.parser_name_;
         if (is_fts_task() && OB_FAIL(ObFtsIndexBuilderUtil::check_need_to_load_dic(parser_name, need_to_load_dic))) {
         } else if (need_to_load_dic) {
           next_status = ObDDLTaskStatus::LOAD_DICTIONARY;
         } else {
-          next_status = ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA;
+          next_status = ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT;
         }
         break;
       }
-      case ObDDLTaskStatus::LOAD_DICTIONARY: {
+      case ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT: {
         next_status = ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA;
+        break;
+      }
+      case ObDDLTaskStatus::LOAD_DICTIONARY: {
+        next_status = ObDDLTaskStatus::WAIT_ROWKEY_DOC_TABLE_COMPLEMENT;
         break;
       }
       case ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA: {
