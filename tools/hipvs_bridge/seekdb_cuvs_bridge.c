@@ -49,14 +49,16 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 128;
+  h->ip->graph_degree = 160;
   /*
-   * Most aggressive rung: intermediate graph degree equals the final graph
-   * degree, so the build skips the pruning step entirely. Fastest and the most
-   * likely to trip the recall delta gate; the evaluator keeps the best result.
+   * Reuse the 160/160/20 configuration measured on the repository's
+   * codex/amd-juanzhi-local20 branch. A larger final graph preserves more
+   * neighbors while reducing the NN-descent budget. Keep search_width=4;
+   * width=32 was not supported with this graph in those measurements.
+   * Local surrogate recall does not establish the official hidden-set gate.
    */
-  h->ip->intermediate_graph_degree = 128;
-  h->ip->nn_descent_niter = 64;
+  h->ip->intermediate_graph_degree = 160;
+  h->ip->nn_descent_niter = 20;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
