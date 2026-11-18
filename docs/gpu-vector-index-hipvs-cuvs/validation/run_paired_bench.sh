@@ -410,7 +410,7 @@ PY
 
     local recall
     recall=$(python3 - "$EVIDENCE/ids-$name-k$k.txt" "$(gt_cache_path "$k")" "$k" \
-                        "$NQ" "$GT_QUERIES" <<'PY'
+                        "$NQ" "$GT_QUERIES" "$BASE_TSV" <<'PY'
 import sys
 
 ids_path, gt_path, k, nq, g = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
@@ -423,16 +423,21 @@ with open(ids_path, "r", encoding="utf-8") as fh:
     got = [int(x) for x in fh.read().split()]
 
 assert len(gt) >= g * k, f"ground truth has {len(gt)} ids, expected {g * k}"
-assert len(got) >= g * k, f"results have {len(got)} ids, expected at least {g * k}"
+assert len(got) == nq * k, f"results have {len(got)} ids, expected {nq * k}"
+with open(sys.argv[6], "r", encoding="utf-8") as fh:
+    valid_ids = {int(line.split("\t", 1)[0]) for line in fh if line.strip()}
+
+# Integrity covers every query even when exact recall is sampled.
+for i in range(nq):
+    row = got[i * k:(i + 1) * k]
+    assert len(set(row)) == k, f"query {i}: duplicate result IDs"
+    assert set(row) <= valid_ids, f"query {i}: result ID outside the input table"
 
 hits = 0
-unique_ok = True
 for i in range(g):
     row = got[i * k:(i + 1) * k]
-    if len(set(row)) != k:
-        unique_ok = False
     hits += len(set(row) & set(gt[i * k:(i + 1) * k]))
-print(f"{hits / (g * k):.6f}{'' if unique_ok else ' duplicate_ids=true'}")
+print(f"{hits / (g * k):.6f}")
 PY
 )
     say "$name: top-$k recall@$k=$recall"
